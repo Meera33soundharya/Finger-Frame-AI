@@ -1,0 +1,30 @@
+/* ============================================================
+   index.css  —  Minimal reset only.
+   All application styles live in App.css.
+   This file intentionally removes Vite's default boilerplate
+   (light-mode variables, 1126px centred root, heading styles)
+   so they don't conflict with the dark-mode design system.
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    background: #07070a;
+    color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+    height: 100%;
+    width: 100%;
+}
