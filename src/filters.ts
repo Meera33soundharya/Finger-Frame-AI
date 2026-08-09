@@ -1,265 +1,654 @@
 // ============================================================
-//  filters.ts
-//  Real-time local visual filter pipeline.
-//  Uses Canvas2D to apply different artistic transformations
-//  inside the polygon clipping region each frame.
-//
-//  Each mode applies a different combination of:
-//  - CSS filters (saturate/contrast/brightness/hue/blur)
-//  - Composite blending modes
-//  - Overlay washes and textures
-//  - Panning/scaling animations on the reference image
+// filters.ts
+// REAL-TIME 3D MOVIE / ANIME / SKETCH FILTER ENGINE
 // ============================================================
 
 import type { Point } from "./fingerFrame";
 import type { StyleId } from "./effects";
 
-// ── Persistent offscreen canvases (created once, reused every frame) ─
-let offA: HTMLCanvasElement | null = null;
-let ctxA: CanvasRenderingContext2D | null = null;
-let offB: HTMLCanvasElement | null = null;
-let ctxB: CanvasRenderingContext2D | null = null;
 
-function ensureOffscreen(w: number, h: number) {
-    if (!offA) { offA = document.createElement("canvas"); ctxA = offA.getContext("2d", { willReadFrequently: true })!; }
-    if (!offB) { offB = document.createElement("canvas"); ctxB = offB.getContext("2d")!; }
-    if (offA.width !== w || offA.height !== h) { offA.width = w; offA.height = h; }
-    if (offB.width !== w || offB.height !== h) { offB.width = w; offB.height = h; }
-    return { offA, ctxA: ctxA!, offB, ctxB: ctxB! };
+// ------------------------------------------------------------
+// Offscreen canvas
+// ------------------------------------------------------------
+
+let offscreen: HTMLCanvasElement | null = null;
+let offscreenCtx: CanvasRenderingContext2D | null = null;
+// Second offscreen for multi-pass compositing (bloom, edge-detect)
+let offscreen2: HTMLCanvasElement | null = null;
+let offscreenCtx2: CanvasRenderingContext2D | null = null;
+
+function ensureCanvas(w: number, h: number) {
+  if (!offscreen) {
+    offscreen = document.createElement("canvas");
+    offscreenCtx = offscreen.getContext("2d", { willReadFrequently: false });
+    offscreen2 = document.createElement("canvas");
+    offscreenCtx2 = offscreen2.getContext("2d", { willReadFrequently: false });
+  }
+
+  if (offscreen.width !== w || offscreen.height !== h) {
+    offscreen.width = w;
+    offscreen.height = h;
+    offscreen2!.width = w;
+    offscreen2!.height = h;
+  }
+
+  return {
+    canvas: offscreen,
+    ctx: offscreenCtx!,
+    canvas2: offscreen2!,
+    ctx2: offscreenCtx2!,
+  };
 }
 
-// ── Helpers ─────────────────────────────────────────────────
 
-/** Draw the mirrored video frame onto an offscreen canvas */
-function drawMirroredTo(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, w: number, h: number, filter: string) {
-    ctx.save();
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-    ctx.filter = filter;
-    ctx.drawImage(video, 0, 0, w, h);
-    ctx.filter = "none";
-    ctx.restore();
-}
+// ------------------------------------------------------------
+// Draw filtered live video
+// CRITICAL FIX: ctx.filter is silently ignored by Chrome/WebGL when
+// ctx.clip() is active. We must bake the filter on the OFFSCREEN canvas
+// (no clip there), then draw that result into the clipped main ctx.
+// ------------------------------------------------------------
 
-/** Get the polygon bounding box */
-function bbox(polygon: Point[]) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const p of polygon) {
-        if (p.x < minX) minX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y > maxY) maxY = p.y;
-    }
-    return { minX, minY, maxX, maxY, pw: maxX - minX, ph: maxY - minY };
-}
-
-/** Draw the filter image into the polygon bounding box with cover logic + animation */
-function drawImageAnimated(
-    ctx: CanvasRenderingContext2D,
-    img: HTMLImageElement,
-    polygon: Point[],
-    time: number,
-    scaleAmp = 0.08,
-    panAmpX = 0.04,
-    panAmpY = 0.03
+function drawFilteredVideo(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  w: number,
+  h: number,
+  filter: string,
+  alpha: number
 ) {
-    const { minX, minY, pw, ph } = bbox(polygon);
-    const imgRatio = img.naturalWidth / img.naturalHeight;
-    const polyRatio = pw / ph;
+  // Step 1: bake filter + mirror onto unclipped offscreen canvas
+  const { canvas: off, ctx: offCtx } = ensureCanvas(w, h);
+  offCtx.clearRect(0, 0, w, h);
+  offCtx.save();
+  offCtx.translate(w, 0);
+  offCtx.scale(-1, 1);
+  offCtx.filter = filter;
+  offCtx.drawImage(video, 0, 0, w, h);
+  offCtx.filter = "none";
+  offCtx.restore();
 
-    let dw = pw, dh = ph;
-    if (polyRatio > imgRatio) { dh = pw / imgRatio; } else { dw = ph * imgRatio; }
-
-    // Animate: breathing scale + gentle pan
-    const scale = 1.0 + scaleAmp * Math.sin(time * 1.8);
-    const panX = Math.sin(time * 1.3) * pw * panAmpX;
-    const panY = Math.cos(time * 1.1) * ph * panAmpY;
-
-    const cx = minX + pw / 2 + panX;
-    const cy = minY + ph / 2 + panY;
-
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.scale(scale, scale);
-    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
-    ctx.restore();
+  // Step 2: draw the baked result into the clipped main ctx
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(off, 0, 0, w, h);
+  ctx.restore();
 }
 
-// ═══════════════════════════════════════════════════════════
-//  Main exported render function
-// ═══════════════════════════════════════════════════════════
+// ------------------------------------------------------------
+// Draw generated filter image
+// ------------------------------------------------------------
 
-/**
- * Called every frame inside the polygon clip region.
- * ctx is already clipped — just draw.
- */
+function drawFilterImage(
+  ctx: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  w: number,
+  h: number,
+  alpha: number
+) {
+  if (!image.complete || image.naturalWidth <= 0) {
+    return false;
+  }
+
+  ctx.save();
+
+  ctx.globalAlpha = alpha;
+  ctx.globalCompositeOperation = "source-over";
+
+  ctx.translate(w, 0);
+  ctx.scale(-1, 1);
+
+  ctx.drawImage(image, 0, 0, w, h);
+
+  ctx.restore();
+
+  return true;
+}
+
+// ------------------------------------------------------------
+// Color overlay
+// ------------------------------------------------------------
+
+function overlay(
+  ctx: CanvasRenderingContext2D,
+  color: string,
+  operation: GlobalCompositeOperation,
+  w: number,
+  h: number,
+  alpha: number
+) {
+  ctx.save();
+
+  ctx.globalCompositeOperation = operation;
+  ctx.globalAlpha = alpha;
+
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.restore();
+}
+
+// ------------------------------------------------------------
+// 3D MOVIE
+// ------------------------------------------------------------
+
+function render3DMovie(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  image: HTMLImageElement | null,
+  w: number,
+  h: number,
+  presence: number
+) {
+  const { ctx: offCtx, canvas2, ctx2 } = ensureCanvas(w, h);
+
+  // Pass 1: Base cinematic color grade — baked on offscreen1
+  offCtx.clearRect(0, 0, w, h);
+  offCtx.save();
+  offCtx.translate(w, 0);
+  offCtx.scale(-1, 1);
+  offCtx.filter = "saturate(1.75) contrast(1.22) brightness(1.1) sepia(0.08)";
+  offCtx.drawImage(video, 0, 0, w, h);
+  offCtx.filter = "none";
+  offCtx.restore();
+
+  // Pass 2: Bloom — bright blurred layer composited as screen onto offscreen1
+  ctx2.clearRect(0, 0, w, h);
+  ctx2.save();
+  ctx2.translate(w, 0);
+  ctx2.scale(-1, 1);
+  ctx2.filter = "saturate(2.5) brightness(1.8) blur(16px) contrast(1.2)";
+  ctx2.drawImage(video, 0, 0, w, h);
+  ctx2.filter = "none";
+  ctx2.restore();
+  offCtx.save();
+  offCtx.globalCompositeOperation = "screen";
+  offCtx.globalAlpha = 0.30;
+  offCtx.drawImage(canvas2, 0, 0, w, h);
+  offCtx.restore();
+
+  // Pass 3: Warm cinematic top light gradient
+  const light = offCtx.createLinearGradient(0, 0, 0, h);
+  light.addColorStop(0, "rgba(255,220,160,0.22)");
+  light.addColorStop(0.5, "rgba(255,180,100,0.06)");
+  light.addColorStop(1, "rgba(30,0,80,0.10)");
+  offCtx.save();
+  offCtx.globalCompositeOperation = "screen";
+  offCtx.globalAlpha = 1;
+  offCtx.fillStyle = light;
+  offCtx.fillRect(0, 0, w, h);
+  offCtx.restore();
+
+  // Composite into clipped main ctx
+  ctx.save();
+  ctx.globalAlpha = presence;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(offscreen!, 0, 0, w, h);
+  ctx.restore();
+
+  // Generated 3D character asset, if available
+  if (image) {
+    drawFilterImage(ctx, image, w, h, 0.25 * presence);
+  }
+}
+
+// ------------------------------------------------------------
+// ANIME
+// ------------------------------------------------------------
+
+function renderAnime(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  image: HTMLImageElement | null,
+  w: number,
+  h: number,
+  presence: number
+) {
+  const { ctx: offCtx, canvas2, ctx2 } = ensureCanvas(w, h);
+
+  // Pass 1: High saturation anime base
+  offCtx.clearRect(0, 0, w, h);
+  offCtx.save();
+  offCtx.translate(w, 0);
+  offCtx.scale(-1, 1);
+  offCtx.filter = "saturate(2.2) contrast(1.5) brightness(1.1) hue-rotate(5deg)";
+  offCtx.drawImage(video, 0, 0, w, h);
+  offCtx.filter = "none";
+  offCtx.restore();
+
+  // Pass 2: Edge outline simulation — inverted blurred, multiply
+  ctx2.clearRect(0, 0, w, h);
+  ctx2.save();
+  ctx2.translate(w, 0);
+  ctx2.scale(-1, 1);
+  ctx2.filter = "grayscale(1) invert(1) blur(2px) contrast(5) brightness(0.4)";
+  ctx2.drawImage(video, 0, 0, w, h);
+  ctx2.filter = "none";
+  ctx2.restore();
+  offCtx.save();
+  offCtx.globalCompositeOperation = "multiply";
+  offCtx.globalAlpha = 0.25;
+  offCtx.drawImage(canvas2, 0, 0, w, h);
+  offCtx.restore();
+
+  // Pass 3: Anime highlight bloom
+  ctx2.clearRect(0, 0, w, h);
+  ctx2.save();
+  ctx2.translate(w, 0);
+  ctx2.scale(-1, 1);
+  ctx2.filter = "saturate(3) brightness(2.0) blur(10px)";
+  ctx2.drawImage(video, 0, 0, w, h);
+  ctx2.filter = "none";
+  ctx2.restore();
+  offCtx.save();
+  offCtx.globalCompositeOperation = "screen";
+  offCtx.globalAlpha = 0.22;
+  offCtx.drawImage(canvas2, 0, 0, w, h);
+  offCtx.restore();
+
+  // Pass 4: Anime skin wash
+  offCtx.save();
+  offCtx.globalCompositeOperation = "soft-light";
+  offCtx.globalAlpha = 0.16;
+  offCtx.fillStyle = "rgba(255,140,210,1)";
+  offCtx.fillRect(0, 0, w, h);
+  offCtx.restore();
+
+  // Composite into clipped main ctx
+  ctx.save();
+  ctx.globalAlpha = presence;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(offscreen!, 0, 0, w, h);
+  ctx.restore();
+
+  if (image) {
+    drawFilterImage(ctx, image, w, h, 0.28 * presence);
+  }
+}
+
+// ------------------------------------------------------------
+// SKETCH
+// ------------------------------------------------------------
+
+function renderSketch(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  image: HTMLImageElement | null,
+  w: number,
+  h: number,
+  presence: number
+) {
+  const { ctx: offCtx, canvas2, ctx2 } = ensureCanvas(w, h);
+
+  // Pass 1: Grayscale high contrast pencil base
+  offCtx.clearRect(0, 0, w, h);
+  offCtx.save();
+  offCtx.translate(w, 0);
+  offCtx.scale(-1, 1);
+  offCtx.filter = "grayscale(1) contrast(1.8) brightness(1.15)";
+  offCtx.drawImage(video, 0, 0, w, h);
+  offCtx.filter = "none";
+  offCtx.restore();
+
+  // Pass 2: Color-dodge edge detection — creates a pencil line look
+  ctx2.clearRect(0, 0, w, h);
+  ctx2.save();
+  ctx2.translate(w, 0);
+  ctx2.scale(-1, 1);
+  ctx2.filter = "grayscale(1) invert(1) blur(3px) contrast(6) brightness(1.3)";
+  ctx2.drawImage(video, 0, 0, w, h);
+  ctx2.filter = "none";
+  ctx2.restore();
+  offCtx.save();
+  offCtx.globalCompositeOperation = "color-dodge";
+  offCtx.globalAlpha = 0.60;
+  offCtx.drawImage(canvas2, 0, 0, w, h);
+  offCtx.restore();
+
+  // Pass 3: Warm paper tone
+  offCtx.save();
+  offCtx.globalCompositeOperation = "multiply";
+  offCtx.globalAlpha = 0.30;
+  offCtx.fillStyle = "rgba(235, 222, 195, 1)";
+  offCtx.fillRect(0, 0, w, h);
+  offCtx.restore();
+
+  // Composite into clipped main ctx
+  ctx.save();
+  ctx.globalAlpha = presence;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(offscreen!, 0, 0, w, h);
+  ctx.restore();
+
+  if (image) {
+    drawFilterImage(ctx, image, w, h, 0.35 * presence);
+  }
+}
+
+// ------------------------------------------------------------
+// WATERCOLOR
+// ------------------------------------------------------------
+
+function renderWatercolor(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  image: HTMLImageElement | null,
+  w: number,
+  h: number,
+  presence: number
+) {
+  drawFilteredVideo(
+    ctx,
+    video,
+    w,
+    h,
+    `
+      saturate(1.35)
+      contrast(1.05)
+      brightness(1.18)
+    `,
+    presence
+  );
+
+  // Watercolor paper
+  overlay(
+    ctx,
+    "rgba(255,235,205,1)",
+    "multiply",
+    w,
+    h,
+    0.25 * presence
+  );
+
+  // Generated watercolor asset
+  if (image) {
+    drawFilterImage(ctx, image, w, h, 0.30 * presence);
+  }
+}
+
+// ------------------------------------------------------------
+// CYBER ANIME
+// ------------------------------------------------------------
+
+function renderCyberAnime(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  image: HTMLImageElement | null,
+  w: number,
+  h: number,
+  presence: number,
+  time: number
+) {
+  drawFilteredVideo(
+    ctx,
+    video,
+    w,
+    h,
+    `
+      saturate(2.2)
+      contrast(1.4)
+      brightness(0.9)
+      hue-rotate(150deg)
+    `,
+    presence
+  );
+
+  overlay(
+    ctx,
+    `rgba(255,20,190,${0.12 + Math.sin(time * 2.5) * 0.03})`,
+    "screen",
+    w,
+    h,
+    presence
+  );
+
+  overlay(
+    ctx,
+    `rgba(0,220,255,${0.10 + Math.cos(time * 2) * 0.03})`,
+    "screen",
+    w,
+    h,
+    presence
+  );
+
+  if (image) {
+    drawFilterImage(ctx, image, w, h, 0.28 * presence);
+  }
+}
+
+// ------------------------------------------------------------
+// OIL PAINTING
+// ------------------------------------------------------------
+
+function renderOil(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  w: number,
+  h: number,
+  presence: number
+) {
+  drawFilteredVideo(
+    ctx,
+    video,
+    w,
+    h,
+    `
+      saturate(1.5)
+      contrast(1.35)
+      brightness(0.98)
+      sepia(0.18)
+    `,
+    presence
+  );
+
+  overlay(
+    ctx,
+    "rgba(180,110,40,1)",
+    "overlay",
+    w,
+    h,
+    0.18 * presence
+  );
+}
+
+// ------------------------------------------------------------
+// GHIBLI
+// ------------------------------------------------------------
+
+function renderGhibli(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  w: number,
+  h: number,
+  presence: number
+) {
+  drawFilteredVideo(
+    ctx,
+    video,
+    w,
+    h,
+    `
+      saturate(1.45)
+      contrast(1.05)
+      brightness(1.2)
+    `,
+    presence
+  );
+
+  overlay(
+    ctx,
+    "rgba(255,235,180,1)",
+    "multiply",
+    w,
+    h,
+    0.12 * presence
+  );
+}
+
+// ------------------------------------------------------------
+// PORTRAIT
+// ------------------------------------------------------------
+
+function renderPortrait(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  w: number,
+  h: number,
+  presence: number
+) {
+  drawFilteredVideo(
+    ctx,
+    video,
+    w,
+    h,
+    `
+      saturate(1.15)
+      contrast(1.15)
+      brightness(1.03)
+    `,
+    presence
+  );
+}
+
+// ------------------------------------------------------------
+// MAIN FILTER
+// ------------------------------------------------------------
+
 export function applyLocalFilter(
-    ctx: CanvasRenderingContext2D,
-    video: HTMLVideoElement,
-    w: number,
-    h: number,
-    polygon: Point[],
-    style: StyleId,
-    time: number,
-    filterImage: HTMLImageElement | null
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  w: number,
+  h: number,
+  _polygon: Point[],
+  style: StyleId,
+  time: number,
+  filterImage: HTMLImageElement | null,
+  presence = 1,
+  faceResult?: FaceLandmarkerResult,
+  aiResult?: any // FaceWarpResult
 ) {
-    const { ctxA, ctxB } = ensureOffscreen(w, h);
+  // NOTE: faceFilter is intentionally NOT called here.
+  // The reference architecture (app.js drawWindow) fills the ENTIRE
+  // polygon with the styled video — not just the face oval.
+  // The old faceFilter early-return was incorrectly preventing the full
+  // polygon from being drawn.
 
-    // ── 3D Movie — animated character image (breathing + pan) ────────────
-    if (style === "movie3d" || style === "pixar") {
-        if (filterImage?.complete && filterImage.naturalWidth > 0) {
-            drawImageAnimated(ctx, filterImage, polygon, time, 0.08, 0.04, 0.03);
-        } else {
-            // Fallback: high-saturation video with warm overlay
-            drawMirroredTo(ctx, video, w, h, "saturate(2.5) contrast(1.3) brightness(1.1)");
-            ctx.globalCompositeOperation = "overlay";
-            ctx.fillStyle = "rgba(255, 180, 60, 0.25)";
-            ctx.fillRect(0, 0, w, h);
-            ctx.globalCompositeOperation = "source-over";
-        }
-        return;
-    }
+  switch (style) {
+    // ============================
+    // MAIN 3 STYLES
+    // ============================
 
-    // ── Anime — animated image with pastel pink overlay ──────────────────
-    if (style === "anime") {
-        if (filterImage?.complete && filterImage.naturalWidth > 0) {
-            drawImageAnimated(ctx, filterImage, polygon, time + 10, 0.06, 0.03, 0.025);
-            // Add soft magenta anime sheen
-            ctx.globalCompositeOperation = "screen";
-            ctx.fillStyle = "rgba(255, 100, 180, 0.12)";
-            ctx.fillRect(0, 0, w, h);
-            ctx.globalCompositeOperation = "source-over";
-        } else {
-            drawMirroredTo(ctx, video, w, h, "saturate(1.8) contrast(1.2) hue-rotate(10deg)");
-            ctx.globalCompositeOperation = "screen";
-            ctx.fillStyle = "rgba(255, 100, 180, 0.2)";
-            ctx.fillRect(0, 0, w, h);
-            ctx.globalCompositeOperation = "source-over";
-        }
-        return;
-    }
+    case "movie3d":
+      render3DMovie(
+        ctx,
+        video,
+        filterImage,
+        w,
+        h,
+        presence
+      );
+      break;
 
-    // ── Watercolor — live camera content transformed into watercolor ──────
-    if (style === "watercolor") {
-        // Layer 1: soft blurred saturated base
-        ctxA.clearRect(0, 0, w, h);
-        drawMirroredTo(ctxA, video, w, h, "saturate(1.6) contrast(1.1) brightness(1.2) blur(3.5px)");
+    case "anime":
+      renderAnime(
+        ctx,
+        video,
+        filterImage,
+        w,
+        h,
+        presence
+      );
+      break;
 
-        // Layer 2: sharp detail pass at low opacity
-        ctxB.clearRect(0, 0, w, h);
-        drawMirroredTo(ctxB, video, w, h, "saturate(1.3) contrast(1.5) brightness(1.0)");
+    case "sketch":
+      renderSketch(
+        ctx,
+        video,
+        filterImage,
+        w,
+        h,
+        presence
+      );
+      break;
 
-        // Composite: paint the blur on ctx
-        ctx.drawImage(offA!, 0, 0);
+    // ============================
+    // OTHER STYLES
+    // ============================
 
-        // Blend sharp detail at low alpha for edge definition
-        ctx.globalAlpha = 0.35;
-        ctx.drawImage(offB!, 0, 0);
-        ctx.globalAlpha = 1;
+    case "watercolor":
+      renderWatercolor(
+        ctx,
+        video,
+        filterImage,
+        w,
+        h,
+        presence
+      );
+      break;
 
-        // Warm paper wash (multiply blend)
-        ctx.globalCompositeOperation = "multiply";
-        ctx.fillStyle = "rgba(240, 225, 195, 0.55)";
-        ctx.fillRect(0, 0, w, h);
+    case "cyberpunk":
+    case "cyberpunk-girl":
+      renderCyberAnime(
+        ctx,
+        video,
+        filterImage,
+        w,
+        h,
+        presence,
+        time
+      );
+      break;
 
-        // Soft pink/peach paint wash
-        ctx.globalCompositeOperation = "overlay";
-        ctx.fillStyle = "rgba(255, 200, 180, 0.2)";
-        ctx.fillRect(0, 0, w, h);
+    case "oil-painting":
+      renderOil(
+        ctx,
+        video,
+        w,
+        h,
+        presence
+      );
+      break;
 
-        ctx.globalCompositeOperation = "source-over";
-        return;
-    }
+    case "ghibli":
+      renderGhibli(
+        ctx,
+        video,
+        w,
+        h,
+        presence
+      );
+      break;
 
-    // ── Ghibli — warm dreamy watercolor variant ───────────────────────────
-    if (style === "ghibli") {
-        ctxA.clearRect(0, 0, w, h);
-        drawMirroredTo(ctxA, video, w, h, "saturate(1.9) contrast(1.05) brightness(1.25) blur(4px)");
-        ctx.drawImage(offA!, 0, 0);
+    case "portrait":
+      renderPortrait(
+        ctx,
+        video,
+        w,
+        h,
+        presence
+      );
+      break;
 
-        ctx.globalCompositeOperation = "multiply";
-        ctx.fillStyle = "rgba(255, 235, 200, 0.45)";
-        ctx.fillRect(0, 0, w, h);
+    case "pixar":
+      render3DMovie(
+        ctx,
+        video,
+        filterImage,
+        w,
+        h,
+        presence
+      );
+      break;
 
-        ctx.globalCompositeOperation = "screen";
-        ctx.fillStyle = "rgba(120, 200, 255, 0.12)";
-        ctx.fillRect(0, 0, w, h);
-
-        ctx.globalCompositeOperation = "source-over";
-        return;
-    }
-
-    // ── Sketch — pencil edge detection via color-dodge ────────────────────
-    if (style === "sketch") {
-        // Layer A: desaturated video
-        ctxA.clearRect(0, 0, w, h);
-        drawMirroredTo(ctxA, video, w, h, "grayscale(100%) brightness(1.1)");
-
-        // Layer B: inverted + blurred (dodge source)
-        ctxB.clearRect(0, 0, w, h);
-        drawMirroredTo(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(5px)");
-
-        // Color-dodge: A + B → pencil lines
-        ctxA.globalCompositeOperation = "color-dodge";
-        ctxA.drawImage(offB!, 0, 0);
-        ctxA.globalCompositeOperation = "source-over";
-
-        ctx.drawImage(offA!, 0, 0);
-
-        // Warm paper tint
-        ctx.globalCompositeOperation = "multiply";
-        ctx.fillStyle = "rgba(230, 220, 200, 0.6)";
-        ctx.fillRect(0, 0, w, h);
-
-        // Subtle graphite tone
-        ctx.globalCompositeOperation = "overlay";
-        ctx.fillStyle = "rgba(80, 70, 60, 0.08)";
-        ctx.fillRect(0, 0, w, h);
-
-        ctx.globalCompositeOperation = "source-over";
-        return;
-    }
-
-    // ── Cyberpunk — neon glow on live video ───────────────────────────────
-    if (style === "cyberpunk") {
-        ctxA.clearRect(0, 0, w, h);
-        drawMirroredTo(ctxA, video, w, h, "saturate(3) contrast(1.4) brightness(0.8) hue-rotate(180deg)");
-        ctx.drawImage(offA!, 0, 0);
-
-        // Magenta neon glow overlay
-        ctx.globalCompositeOperation = "screen";
-        ctx.fillStyle = `rgba(255, 0, 180, ${0.15 + 0.05 * Math.sin(time * 3)})`;
-        ctx.fillRect(0, 0, w, h);
-
-        // Cyan highlight
-        ctx.globalCompositeOperation = "screen";
-        ctx.fillStyle = `rgba(0, 255, 255, ${0.1 + 0.04 * Math.cos(time * 2.5)})`;
-        ctx.fillRect(0, 0, w, h);
-
-        ctx.globalCompositeOperation = "source-over";
-        return;
-    }
-
-    // ── Portrait — soft cinematic portrait look ───────────────────────────
-    if (style === "portrait") {
-        drawMirroredTo(ctx, video, w, h, "saturate(1.3) contrast(1.1) brightness(1.05)");
-
-        // Vignette-like warm top/cool bottom gradient
-        ctx.globalCompositeOperation = "overlay";
-        const grad = ctx.createLinearGradient(0, 0, 0, h);
-        grad.addColorStop(0, "rgba(255, 220, 170, 0.3)");
-        grad.addColorStop(1, "rgba(30, 20, 60, 0.3)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, w, h);
-
-        ctx.globalCompositeOperation = "source-over";
-        return;
-    }
-
-    // ── Oil Painting / Default ─────────────────────────────────────────────
-    drawMirroredTo(ctx, video, w, h, "saturate(1.8) contrast(1.3) brightness(1.05)");
-    ctx.globalCompositeOperation = "overlay";
-    ctx.fillStyle = "rgba(200, 140, 80, 0.2)";
-    ctx.fillRect(0, 0, w, h);
-    ctx.globalCompositeOperation = "source-over";
+    default:
+      render3DMovie(
+        ctx,
+        video,
+        filterImage,
+        w,
+        h,
+        presence
+      );
+      break;
+  }
 }

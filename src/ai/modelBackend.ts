@@ -31,6 +31,10 @@ export class FalAIBackend implements AIModelBackend {
     }
 
     async infer(request: InferRequest): Promise<InferResult> {
+        if (!this.apiKey) {
+            return this.mockFallback.infer(request);
+        }
+
         const { croppedImage, polygon } = request;
         const base64 = croppedImage.toDataURL("image/jpeg", 0.85);
 
@@ -57,6 +61,11 @@ export class FalAIBackend implements AIModelBackend {
             if (!response.ok) {
                 const errorText = await response.text();
                 console.warn(`Fal.ai API error ${response.status}: ${errorText}. Falling back to local filter.`);
+                if (response.status === 403) {
+                    console.warn("API key balance exhausted or invalid. Removing key from local storage.");
+                    localStorage.removeItem(FAL_KEY_STORAGE);
+                    this.apiKey = ""; // Disable on this instance to prevent further retries
+                }
                 return this.mockFallback.infer(request);
             }
 

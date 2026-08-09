@@ -62,20 +62,78 @@ export function toPixel(
 }
 
 // ─────────────────────────────────────────────
-//  Quad computation  (ported from reference)
+//  Quad computation
 // ─────────────────────────────────────────────
 
+// Additional landmark indices used for single-hand mode
+const INDEX_MCP = 5;   // index finger knuckle base
+const PINKY_MCP = 17;  // pinky knuckle base
+
 /**
- * Given the landmark arrays for exactly two detected hands, compute the
- * four frame-corner points [leftIndex, rightIndex, rightThumb, leftThumb]
- * in anatomical order (traces a rectangle when both hands hold the "L" pose).
+ * Build a stable quad from a SINGLE hand's landmarks.
+ * Uses the palm base (wrist + pinky-MCP + index-MCP) and fingertips
+ * to create a roughly rectangular frame region.
+ */
+function singleHandQuad(
+    lm: Array<{ x: number; y: number; z: number }>,
+    canvasW: number,
+    canvasH: number
+): Point[] | null {
+    const wrist    = toPixel(lm[WRIST],      canvasW, canvasH);
+    const indexMcp = toPixel(lm[INDEX_MCP],  canvasW, canvasH);
+    const pinkyMcp = toPixel(lm[PINKY_MCP],  canvasW, canvasH);
+    const indexTip = toPixel(lm[INDEX_TIP],  canvasW, canvasH);
+    const thumbTip = toPixel(lm[THUMB_TIP],  canvasW, canvasH);
+
+    // Estimate hand size
+    const palmW = dist(indexMcp, pinkyMcp);
+    const palmH = dist(wrist, indexMcp);
+    const handSize = Math.max(palmW, palmH);
+
+    // Need a minimum hand size (not too far from camera)
+    if (handSize < canvasW * 0.04) return null;
+
+    // Build a rectangle that spans from wrist area to fingertips
+    // Use bounding box of thumb, index, and palm points, padded slightly
+    const allPts = [wrist, indexMcp, pinkyMcp, indexTip, thumbTip];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of allPts) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+    }
+
+    // Pad by 15% on each side so the filter image has breathing room
+    const padX = (maxX - minX) * 0.15;
+    const padY = (maxY - minY) * 0.15;
+    minX -= padX; maxX += padX;
+    minY -= padY; maxY += padY;
+
+    // Reject if still too small
+    const area = (maxX - minX) * (maxY - minY);
+    if (area < canvasW * canvasH * 0.005) return null;
+
+    // Return as TL, TR, BR, BL
+    return [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY },
+    ];
+}
+
+/**
+ * Given the landmark arrays for 1 or 2 detected hands, compute the
+ * four frame-corner quad points.
  *
- * Returns null when:
- *  - fewer than 2 hands detected
- *  - either hand fails the L-shape gesture gate
- *  - the resulting quad is degenerate (bowtie / near-zero area)
+ * TWO HANDS: index-finger tips + thumb tips form a rectangular frame
+ *            (requires "L" pose — thumbs and index spread apart).
+ * ONE HAND:  palm bounding box used as the filter region.
  *
- * @param hands       Array of 2 landmark arrays (each has 21 points)
+ * Returns null when the quad is degenerate or hands not visible.
+ *
+ * @param hands       Array of 1–2 landmark arrays (each has 21 points)
  * @param canvasW     Canvas pixel width
  * @param canvasH     Canvas pixel height
  * @param frameActive True while a frame is already visible (relaxes gate)
@@ -86,14 +144,18 @@ export function computeQuad(
     canvasH: number,
     frameActive: boolean
 ): Point[] | null {
-    if (hands.length < 2) return null;
+    if (hands.length === 0) return null;
 
+    // ── Single-hand mode ──────────────────────────────────────────
+    if (hands.length === 1) {
+        return singleHandQuad(hands[0], canvasW, canvasH);
+    }
+
+    // ── Two-hand frame mode ───────────────────────────────────────
     const info = hands.map((lm) => ({
         index: toPixel(lm[INDEX_TIP], canvasW, canvasH),
         thumb: toPixel(lm[THUMB_TIP], canvasW, canvasH),
         wristX: toPixel(lm[WRIST], canvasW, canvasH).x,
-        // Hand scale: wrist → middle-knuckle distance is stable regardless of
-        // which direction fingers are pointing (finger length foreshortens).
         scale:
             dist(
                 toPixel(lm[WRIST], canvasW, canvasH),
@@ -101,30 +163,41 @@ export function computeQuad(
             ) + 1,
     }));
 
-    // ── Gesture gate: thumb and index must be spread apart (the "L" shape) ──
-    // Hysteresis: stricter to enter (0.75), easier to stay once active (0.2).
-    const needed = frameActive ? 0.2 : 0.75;
+    // Gesture gate: thumb and index must be spread (the "L" shape).
+    // Hysteresis: stricter to enter (0.6), easier to stay once active (0.15).
+    const needed = frameActive ? 0.15 : 0.6;
+    let gestureOk = true;
     for (const hd of info) {
-        if (dist(hd.thumb, hd.index) < hd.scale * needed) return null;
+        if (dist(hd.thumb, hd.index) < hd.scale * needed) {
+            gestureOk = false;
+            break;
+        }
     }
 
-    // Sort by wrist X so the left-screen hand is [0] and right-screen is [1].
+    // If L-gesture fails, fall back to single-hand mode with the first hand
+    if (!gestureOk) {
+        return singleHandQuad(hands[0], canvasW, canvasH);
+    }
+
+    // Sort by wrist X: left-screen hand [0], right-screen hand [1]
     info.sort((a, b) => a.wristX - b.wristX);
     const [A, B] = info;
 
-    // Standard pose: both index fingers UP, thumbs DOWN → rectangle cycle.
-    // Flipping one hand's fingers crosses the quad into a bowtie.
+    // Build rect: index tips = top corners, thumb tips = bottom corners
     const pts: Point[] = [A.index, B.index, B.thumb, A.thumb];
 
-    // ── Area gate: reject degenerate (bowtie / near-zero) quads ──
+    // Area gate: reject degenerate quads
     const cx = pts.reduce((s, p) => s + p.x, 0) / 4;
     const cy = pts.reduce((s, p) => s + p.y, 0) / 4;
     const hull = [...pts].sort(
         (a, b) =>
             Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx)
     );
-    const minArea = frameActive ? 0.0005 : 0.005;
-    if (polygonArea(hull) < canvasW * canvasH * minArea) return null;
+    const minArea = frameActive ? 0.0003 : 0.003;
+    if (polygonArea(hull) < canvasW * canvasH * minArea) {
+        // Degenerate two-hand quad → fall back to single hand
+        return singleHandQuad(hands[0], canvasW, canvasH);
+    }
 
     return pts;
 }

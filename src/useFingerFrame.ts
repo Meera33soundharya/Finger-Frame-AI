@@ -12,27 +12,43 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 import { createHandTracker } from "./handTracker";
+import { createFaceTracker } from "./faceTracker";
 import { computeQuad, dist, lerpPt } from "./fingerFrame";
 import type { Point } from "./fingerFrame";
 import { drawFrameOutline, STYLES, createFrameState } from "./effects";
 import type { StyleId, FrameState } from "./effects";
 import { applyLocalFilter } from "./filters";
+import { createBackend } from "./ai/modelBackend";
+import type { AIModelBackend } from "./ai/types";
+import type { FaceWarpResult } from "./faceWarper";
 
 // ── Smoothing constants (ported from reference) ──────────────
 const MAX_LOST_FRAMES = 25;
 const JUMP_CONFIRM_FRAMES = 2;
 
-// ── Step 1: Load the local filter image ──────────────
-const filterImage = new Image();
-filterImage.src = "/filter.png";
-filterImage.onload = () => {
-    console.log("FILTER IMAGE LOADED");
-    console.log("FILTER IMAGE WIDTH:", filterImage.width);
-    console.log("FILTER IMAGE HEIGHT:", filterImage.height);
-};
-filterImage.onerror = (e) => {
-    console.error("FAILED TO LOAD FILTER IMAGE. Check asset path.", e);
-};
+// ── Step 1: Preload filter assets ──────────────
+const filterImages: Partial<Record<StyleId, HTMLImageElement>> = {};
+
+function loadAsset(id: StyleId, filename: string) {
+    const img = new Image();
+    img.src = `/${filename}`;
+    img.onload = () => console.log(`[Asset] Loaded ${id}`);
+    img.onerror = (e) => console.error(`[Asset] FAILED to load ${id} (/${filename})`, e);
+    filterImages[id] = img;
+}
+
+loadAsset("movie3d", "filter_movie3d.png");
+loadAsset("anime", "filter_anime.png");
+loadAsset("cyberpunk", "filter_cyberpunk.png");
+loadAsset("cyberpunk-girl", "filter_cyberpunk-girl.png");
+loadAsset("watercolor", "filter_watercolor.png");
+loadAsset("sketch", "filter_sketch.png");
+loadAsset("oil-painting", "filter_oil-painting.png");
+loadAsset("ghibli", "filter_ghibli.png");
+// Reusing movie3d for pixar due to generation limits
+loadAsset("pixar", "filter_movie3d.png");
+// Reusing watercolor for portrait due to generation limits
+loadAsset("portrait", "filter_watercolor.png");
 
 export type InitStatus =
     | "idle"
@@ -69,9 +85,17 @@ export function useFingerFrame(): UseFingerFrameReturn {
     const lastVideoTimeRef = useRef(-1);
     const rafIdRef = useRef(0);
     const trackerRef = useRef<Awaited<ReturnType<typeof createHandTracker>> | null>(null);
+    const faceTrackerRef = useRef<Awaited<ReturnType<typeof createFaceTracker>> | null>(null);
     const showHintRef = useRef(true);
     const lastFrameTimeRef = useRef(performance.now());
     const frameStateRef = useRef<FrameState>(createFrameState());
+
+    const aiBackendRef = useRef<AIModelBackend | null>(null);
+    const latestAiResultRef = useRef<FaceWarpResult | null>(null);
+    const isInferringRef = useRef(false);
+    
+    // To grab the current snapshot for AI
+    const snapshotCanvasRef = useRef(document.createElement("canvas"));
 
     const setActiveStyle = useCallback((id: StyleId) => {
         styleRef.current = id;
@@ -96,8 +120,9 @@ export function useFingerFrame(): UseFingerFrameReturn {
         const video = videoRef.current;
         const canvas = canvasRef.current;
         const tracker = trackerRef.current;
+        const faceTracker = faceTrackerRef.current;
 
-        if (!video || !canvas || !tracker) {
+        if (!video || !canvas || !tracker || !faceTracker) {
             rafIdRef.current = requestAnimationFrame(loop);
             return;
         }
@@ -115,15 +140,18 @@ export function useFingerFrame(): UseFingerFrameReturn {
         // 1. Base layer: raw mirrored camera
         drawMirroredVideo(ctx, w, h, video);
 
-        // 2. Run hand detection
+        // 2. Run hand & face detection
         let targetQuad: Point[] | null = null;
+        let faceResult: any = null;
         if (video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
             lastVideoTimeRef.current = video.currentTime;
             try {
                 const results = tracker.detectForVideo(video, performance.now());
-                if (results?.landmarks?.length === 2) {
+                if (results?.landmarks?.length >= 1) {
                     targetQuad = computeQuad(results.landmarks, w, h, frameActiveRef.current);
                 }
+                
+                faceResult = faceTracker.detectForVideo(video, performance.now());
             } catch {
                 // Ignore detection throws before video is stable
             }
@@ -173,7 +201,6 @@ export function useFingerFrame(): UseFingerFrameReturn {
 
             // ── Draw local visual filter inside polygon ──
             ctx.save();
-            ctx.globalAlpha = presence;
 
             // 1. Create polygon clipping path
             ctx.beginPath();
@@ -182,18 +209,23 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 ctx.lineTo(quad[i].x, quad[i].y);
             }
             ctx.closePath();
-            ctx.clip(); // MUST BE BEFORE drawImage
+            ctx.clip(); // clips all drawing to polygon shape
 
-            // 2. Apply specific local filter (3D Animation, Watercolor, Sketch)
+            // 2. Apply specific local filter — draws styled video directly on
+            //    top of the raw video already in the canvas (source-over).
+            //    globalAlpha is set inside applyLocalFilter via presence.
             applyLocalFilter(
-                ctx, 
-                video, 
-                w, 
-                h, 
-                quad, 
-                styleRef.current, 
-                t, 
-                filterImage
+                ctx,
+                video,
+                w,
+                h,
+                quad,
+                styleRef.current,
+                t,
+                filterImages[styleRef.current] || null,
+                presence,
+                faceResult,
+                latestAiResultRef.current
             );
 
             ctx.restore();
@@ -221,10 +253,16 @@ export function useFingerFrame(): UseFingerFrameReturn {
 
         async function init() {
             try {
+                const backend = createBackend();
+                await backend.initialize();
+                aiBackendRef.current = backend;
+                
                 setStatus("loading-tracker");
                 const tracker = await createHandTracker();
+                const faceTracker = await createFaceTracker();
                 if (cancelled) return;
                 trackerRef.current = tracker;
+                faceTrackerRef.current = faceTracker;
 
                 setStatus("requesting-camera");
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -251,9 +289,16 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 const canvas = canvasRef.current;
                 canvas.width = video.videoWidth || 1280;
                 canvas.height = video.videoHeight || 720;
+                
+                snapshotCanvasRef.current.width = canvas.width;
+                snapshotCanvasRef.current.height = canvas.height;
 
                 setStatus("ready");
                 rafIdRef.current = requestAnimationFrame(loop);
+                
+                // Start Async AI Loop
+                runAiLoop();
+                
             } catch (err) {
                 if (cancelled) return;
                 const msg = err instanceof Error ? 
@@ -276,6 +321,67 @@ export function useFingerFrame(): UseFingerFrameReturn {
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    const runAiLoop = async () => {
+        if (!videoRef.current || !trackerRef.current || !faceTrackerRef.current || !aiBackendRef.current) return;
+        if (isInferringRef.current) return;
+        
+        const video = videoRef.current;
+        const faceTracker = faceTrackerRef.current;
+        const backend = aiBackendRef.current;
+        const style = styleRef.current;
+        
+        // Only run inference if there's a stable presence
+        if (presenceRef.current > 0.5 && cornersRef.current) {
+            try {
+                isInferringRef.current = true;
+                const snapCtx = snapshotCanvasRef.current.getContext("2d")!;
+                snapCtx.save();
+                snapCtx.translate(video.videoWidth, 0);
+                snapCtx.scale(-1, 1);
+                snapCtx.drawImage(video, 0, 0);
+                snapCtx.restore();
+                
+                // Must get landmarks *at this exact moment*
+                const result = faceTracker.detectForVideo(video, performance.now());
+                if (result.faceLandmarks && result.faceLandmarks.length > 0) {
+                    const promptMap: Record<string, string> = {
+                        "movie3d": "3D animated movie character, Disney Pixar style, highly detailed, expressive, glowing skin",
+                        "pixar": "3D animated movie character, Disney Pixar style, highly detailed, expressive, glowing skin",
+                        "anime": "anime character, studio ghibli style, cel shaded",
+                        "cyberpunk": "cyberpunk character, neon lights, highly detailed, futuristic",
+                        "cyberpunk-girl": "cyberpunk girl, neon lights, highly detailed, futuristic",
+                        "sketch": "pencil sketch portrait, highly detailed, black and white",
+                        "watercolor": "watercolor portrait painting, beautiful, artistic",
+                        "oil-painting": "classic oil painting portrait, masterpiece",
+                        "ghibli": "studio ghibli character, anime, detailed background",
+                        "portrait": "professional studio portrait photography, cinematic lighting"
+                    };
+                    
+                    const inferRes = await backend.infer({
+                        croppedImage: snapshotCanvasRef.current,
+                        polygon: cornersRef.current,
+                        prompt: promptMap[style] || promptMap["movie3d"],
+                        timestamp: performance.now(),
+                        presence: presenceRef.current
+                    });
+                    
+                    latestAiResultRef.current = {
+                        image: inferRes.outputCanvas,
+                        sourceLandmarks: result.faceLandmarks[0],
+                        style: style
+                    };
+                }
+            } catch (e) {
+                console.warn("Async AI inference failed", e);
+            } finally {
+                isInferringRef.current = false;
+            }
+        }
+        
+        // Loop continuously with a small delay
+        setTimeout(runAiLoop, 300); 
+    };
 
     return {
         videoRef,

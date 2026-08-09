@@ -26,6 +26,22 @@ export default function App() {
     const [apiKey, setApiKey] = useState(() => localStorage.getItem(FAL_KEY_STORAGE) ?? "");
     const [keySaved, setKeySaved] = useState(!!localStorage.getItem(FAL_KEY_STORAGE));
 
+    // Keep keySaved in sync with localStorage (e.g. when backend auto-clears key on 403)
+    useEffect(() => {
+        function syncKey() {
+            const saved = !!localStorage.getItem(FAL_KEY_STORAGE);
+            setKeySaved(saved);
+            if (!saved) setApiKey("");
+        }
+        // Poll every 2s for key removal by the backend (no cross-window storage event needed)
+        const interval = setInterval(syncKey, 2000);
+        window.addEventListener("storage", syncKey);
+        return () => {
+            clearInterval(interval);
+            window.removeEventListener("storage", syncKey);
+        };
+    }, []);
+
     // ── Keyboard shortcuts ─────────────────────────────────────
     useEffect(() => {
         function onKey(e: KeyboardEvent) {
@@ -156,7 +172,13 @@ export default function App() {
                     <button
                         id="settings-btn"
                         className={`settings-btn${keySaved ? " settings-btn--connected" : " settings-btn--attention"}`}
-                        onClick={() => setShowSettings(true)}
+                        onClick={() => {
+                            // Re-sync from localStorage in case backend auto-cleared the key
+                            const currentKey = localStorage.getItem(FAL_KEY_STORAGE) ?? "";
+                            setApiKey(currentKey);
+                            setKeySaved(!!currentKey);
+                            setShowSettings(true);
+                        }}
                         title="Settings (press ,)"
                         aria-label="Open settings"
                     >
