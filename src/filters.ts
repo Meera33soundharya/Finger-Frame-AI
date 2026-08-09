@@ -5,6 +5,8 @@
 
 import type { Point } from "./fingerFrame";
 import type { StyleId } from "./effects";
+import { Compositor } from "./ai/compositor";
+import type { FaceWarpResult } from "./faceWarper";
 
 
 // ------------------------------------------------------------
@@ -40,9 +42,21 @@ function ensureCanvas(w: number, h: number) {
   };
 }
 
+// Compositor instance for applying AI results to polygon
+let compositor: Compositor | null = null;
 
-// ------------------------------------------------------------
-// Draw filtered live video
+function getCompositor(): Compositor {
+  if (!compositor) {
+    compositor = new Compositor();
+  }
+  return compositor;
+}
+
+// ============================================================
+// AI-Aware Rendering: Uses getCompositor() to apply AI results
+// ============================================================
+
+// ============================================================
 // CRITICAL FIX: ctx.filter is silently ignored by Chrome/WebGL when
 // ctx.clip() is active. We must bake the filter on the OFFSCREEN canvas
 // (no clip there), then draw that result into the clipped main ctx.
@@ -519,136 +533,84 @@ export function applyLocalFilter(
   video: HTMLVideoElement,
   w: number,
   h: number,
-  _polygon: Point[],
+  polygon: Point[],
   style: StyleId,
   time: number,
   filterImage: HTMLImageElement | null,
   presence = 1,
-  faceResult?: FaceLandmarkerResult,
-  aiResult?: any // FaceWarpResult
+  _faceResult?: any,
+  aiResult?: FaceWarpResult
 ) {
-  // NOTE: faceFilter is intentionally NOT called here.
-  // The reference architecture (app.js drawWindow) fills the ENTIRE
-  // polygon with the styled video — not just the face oval.
-  // The old faceFilter early-return was incorrectly preventing the full
-  // polygon from being drawn.
+  // ════════════════════════════════════════════════════════════
+  // PRIORITY 1: Use AI-transformed image if available
+  // ════════════════════════════════════════════════════════════
+  
+  if (aiResult?.image) {
+    try {
+      // Apply the AI-transformed image directly into the polygon
+      getCompositor().renderWarped(ctx, aiResult.image, polygon, presence);
+      
+      // Optionally overlay the reference filter image on top for artistic enhancement
+      if (filterImage?.complete && filterImage.naturalWidth > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.15 * presence;
+        ctx.globalCompositeOperation = "overlay";
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(filterImage, 0, 0, w, h);
+        ctx.restore();
+      }
+      
+      return;
+    } catch (e) {
+      console.warn("AI composition failed, falling back to CSS filters", e);
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // PRIORITY 2: Fall back to CSS filter-based transformations
+  // ════════════════════════════════════════════════════════════
 
   switch (style) {
-    // ============================
-    // MAIN 3 STYLES
-    // ============================
-
     case "movie3d":
-      render3DMovie(
-        ctx,
-        video,
-        filterImage,
-        w,
-        h,
-        presence
-      );
+      render3DMovie(ctx, video, filterImage, w, h, presence);
       break;
 
     case "anime":
-      renderAnime(
-        ctx,
-        video,
-        filterImage,
-        w,
-        h,
-        presence
-      );
+      renderAnime(ctx, video, filterImage, w, h, presence);
       break;
 
     case "sketch":
-      renderSketch(
-        ctx,
-        video,
-        filterImage,
-        w,
-        h,
-        presence
-      );
+      renderSketch(ctx, video, filterImage, w, h, presence);
       break;
 
-    // ============================
-    // OTHER STYLES
-    // ============================
-
     case "watercolor":
-      renderWatercolor(
-        ctx,
-        video,
-        filterImage,
-        w,
-        h,
-        presence
-      );
+      renderWatercolor(ctx, video, filterImage, w, h, presence);
       break;
 
     case "cyberpunk":
     case "cyberpunk-girl":
-      renderCyberAnime(
-        ctx,
-        video,
-        filterImage,
-        w,
-        h,
-        presence,
-        time
-      );
+      renderCyberAnime(ctx, video, filterImage, w, h, presence, time);
       break;
 
     case "oil-painting":
-      renderOil(
-        ctx,
-        video,
-        w,
-        h,
-        presence
-      );
+      renderOil(ctx, video, w, h, presence);
       break;
 
     case "ghibli":
-      renderGhibli(
-        ctx,
-        video,
-        w,
-        h,
-        presence
-      );
+      renderGhibli(ctx, video, w, h, presence);
       break;
 
     case "portrait":
-      renderPortrait(
-        ctx,
-        video,
-        w,
-        h,
-        presence
-      );
+      renderPortrait(ctx, video, w, h, presence);
       break;
 
     case "pixar":
-      render3DMovie(
-        ctx,
-        video,
-        filterImage,
-        w,
-        h,
-        presence
-      );
+      render3DMovie(ctx, video, filterImage, w, h, presence);
       break;
 
     default:
-      render3DMovie(
-        ctx,
-        video,
-        filterImage,
-        w,
-        h,
-        presence
-      );
+      render3DMovie(ctx, video, filterImage, w, h, presence);
       break;
   }
 }

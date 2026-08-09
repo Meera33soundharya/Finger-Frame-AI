@@ -19,6 +19,8 @@ export default function App() {
         activeStyle,
         setActiveStyle,
         showHint,
+        fingerStates,
+        gesture,
     } = useFingerFrame();
 
     const { styles, addCustomStyle } = useAIStyles();
@@ -164,6 +166,40 @@ export default function App() {
                     <div className="live-pill" aria-label="Live camera active">
                         <span className="live-pill__dot" />
                         <span className="live-pill__text">LIVE</span>
+                    </div>
+                )}
+
+                {/* ── Finger Count & Gesture Display ── */}
+                {status === "ready" && fingerStates && (
+                    <div className="finger-stats" style={{
+                        position: "absolute",
+                        top: "80px",
+                        right: "20px",
+                        background: "rgba(0, 0, 0, 0.7)",
+                        color: "#fff",
+                        padding: "12px 16px",
+                        borderRadius: "8px",
+                        fontFamily: "monospace",
+                        fontSize: "14px",
+                        zIndex: 10,
+                        textAlign: "center",
+                        minWidth: "140px",
+                    }}>
+                        <div style={{ fontWeight: "bold", marginBottom: "8px", fontSize: "16px" }}>
+                            🖐️ Fingers: {fingerStates.count}
+                        </div>
+                        <div style={{ fontSize: "12px", opacity: 0.8 }}>
+                            {fingerStates.thumb && "👍"} 
+                            {fingerStates.index && "☝️"} 
+                            {fingerStates.middle && "🖕"} 
+                            {fingerStates.ring && "💍"} 
+                            {fingerStates.pinky && "🤙"}
+                        </div>
+                        {gesture && (
+                            <div style={{ marginTop: "8px", fontSize: "13px", color: "#4ade80" }}>
+                                ✨ {gesture.toUpperCase()}
+                            </div>
+                        )}
                     </div>
                 )}
 

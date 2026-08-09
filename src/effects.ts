@@ -60,7 +60,7 @@ export const STYLES: StyleDef[] = [
         accentColor: "#f59e0b",
         accentColor2: "#fbbf24",
         cornerStyle: "bracket",
-        description: "high-quality 3D animated movie character, large expressive eyes, glossy eye reflections, smooth stylized skin, realistic 3D lighting, cinematic shading, polished 3D rendering",
+        description: "High-quality 3D animated movie character with huge expressive glossy brown eyes, surprised expression, dark detailed hair, soft peach-pink skin tones, smooth polished 3D features, realistic glossy shading, warm cinematic lighting, refined facial details",
     },
     {
         id: "anime",
@@ -69,7 +69,7 @@ export const STYLES: StyleDef[] = [
         accentColor: "#ec4899",
         accentColor2: "#f472b6",
         cornerStyle: "diamond",
-        description: "high quality anime style, 2d animation, cel shading, studio ghibli style, detailed line art, vivid colors",
+        description: "Refined hand-drawn anime illustration with short black hair, calm expressive eyes, clean delicate ink lines, soft beige and warm skin tones, subtle watercolor shading, fine facial details, vintage paper texture",
     },
     {
         id: "cyberpunk",
@@ -78,7 +78,7 @@ export const STYLES: StyleDef[] = [
         accentColor: "#06b6d4",
         accentColor2: "#a855f7",
         cornerStyle: "glitch",
-        description: "Cyberpunk anime male protagonist, intense sharp eyes, messy black hair, futuristic black techwear jacket, neon city at night, electric-blue and purple glow, cinematic rim lighting",
+        description: "Cyberpunk character with intense sharp eyes, messy black hair, futuristic techwear, neon city atmosphere, electric-blue and purple lighting, cinematic rim lighting",
     },
     {
         id: "cyberpunk-girl",
@@ -87,7 +87,7 @@ export const STYLES: StyleDef[] = [
         accentColor: "#f0abfc",
         accentColor2: "#e879f9",
         cornerStyle: "glitch",
-        description: "Futuristic female anime protagonist, expressive eyes, dark flowing hair, futuristic techwear, neon magenta and electric-blue lighting, cybernetic details, cyberpunk city atmosphere",
+        description: "Futuristic female cyberpunk character with expressive eyes, dark flowing hair, futuristic techwear, neon magenta and electric-blue lighting, cybernetic details",
     },
     {
         id: "watercolor",
@@ -114,7 +114,7 @@ export const STYLES: StyleDef[] = [
         accentColor: "#d97706",
         accentColor2: "#f59e0b",
         cornerStyle: "sketch",
-        description: "classic oil painting, thick brush strokes, impasto, masterpiece, museum quality",
+        description: "Traditional high-quality oil painting portrait with soft natural features, warm skin tones, expressive eyes, rich layered colors, visible delicate oil brushstrokes, realistic paint texture, subtle highlights and shadows, elegant classical portrait style, museum-quality aesthetic",
     },
     {
         id: "ghibli",

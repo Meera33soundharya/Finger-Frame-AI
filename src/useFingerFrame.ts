@@ -13,14 +13,15 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { createHandTracker } from "./handTracker";
 import { createFaceTracker } from "./faceTracker";
-import { computeQuad, dist, lerpPt } from "./fingerFrame";
-import type { Point } from "./fingerFrame";
+import { computeQuad, dist, lerpPt, detectExtendedFingers, detectGesture } from "./fingerFrame";
+import type { Point, FingerStates, GestureName } from "./fingerFrame";
 import { drawFrameOutline, STYLES, createFrameState } from "./effects";
 import type { StyleId, FrameState } from "./effects";
 import { applyLocalFilter } from "./filters";
 import { createBackend } from "./ai/modelBackend";
 import type { AIModelBackend } from "./ai/types";
 import type { FaceWarpResult } from "./faceWarper";
+import { Compositor } from "./ai/compositor";
 
 // ── Smoothing constants (ported from reference) ──────────────
 const MAX_LOST_FRAMES = 25;
@@ -65,6 +66,8 @@ export interface UseFingerFrameReturn {
     activeStyle: StyleId;
     setActiveStyle: (id: StyleId) => void;
     showHint: boolean;
+    fingerStates: FingerStates | null;
+    gesture: GestureName;
 }
 
 export function useFingerFrame(): UseFingerFrameReturn {
@@ -75,6 +78,8 @@ export function useFingerFrame(): UseFingerFrameReturn {
     const [errorMessage, setErrorMessage] = useState("");
     const [activeStyle, setActiveStyleState] = useState<StyleId>("movie3d");
     const [showHint, setShowHint] = useState(true);
+    const [fingerStates, setFingerStates] = useState<FingerStates | null>(null);
+    const [gesture, setGesture] = useState<GestureName>(null);
 
     const styleRef = useRef<StyleId>("movie3d");
     const cornersRef = useRef<Point[] | null>(null);
@@ -96,6 +101,15 @@ export function useFingerFrame(): UseFingerFrameReturn {
     
     // To grab the current snapshot for AI
     const snapshotCanvasRef = useRef(document.createElement("canvas"));
+    
+    // Compositor for extracting cropped regions
+    const compositorRef = useRef<Compositor | null>(null);
+    function getCompositor(): Compositor {
+        if (!compositorRef.current) {
+            compositorRef.current = new Compositor();
+        }
+        return compositorRef.current;
+    }
 
     const setActiveStyle = useCallback((id: StyleId) => {
         styleRef.current = id;
@@ -149,6 +163,17 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 const results = tracker.detectForVideo(video, performance.now());
                 if (results?.landmarks?.length >= 1) {
                     targetQuad = computeQuad(results.landmarks, w, h, frameActiveRef.current);
+                    
+                    // Extract finger states from first hand
+                    const firstHandLandmarks = results.landmarks[0];
+                    if (firstHandLandmarks) {
+                        const states = detectExtendedFingers(firstHandLandmarks);
+                        setFingerStates(states);
+                        
+                        // Detect gesture
+                        const detectedGesture = detectGesture(firstHandLandmarks);
+                        setGesture(detectedGesture);
+                    }
                 }
                 
                 faceResult = faceTracker.detectForVideo(video, performance.now());
@@ -225,7 +250,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 filterImages[styleRef.current] || null,
                 presence,
                 faceResult,
-                latestAiResultRef.current
+                latestAiResultRef.current || undefined
             );
 
             ctx.restore();
@@ -346,20 +371,28 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 const result = faceTracker.detectForVideo(video, performance.now());
                 if (result.faceLandmarks && result.faceLandmarks.length > 0) {
                     const promptMap: Record<string, string> = {
-                        "movie3d": "3D animated movie character, Disney Pixar style, highly detailed, expressive, glowing skin",
-                        "pixar": "3D animated movie character, Disney Pixar style, highly detailed, expressive, glowing skin",
-                        "anime": "anime character, studio ghibli style, cel shaded",
-                        "cyberpunk": "cyberpunk character, neon lights, highly detailed, futuristic",
-                        "cyberpunk-girl": "cyberpunk girl, neon lights, highly detailed, futuristic",
-                        "sketch": "pencil sketch portrait, highly detailed, black and white",
-                        "watercolor": "watercolor portrait painting, beautiful, artistic",
-                        "oil-painting": "classic oil painting portrait, masterpiece",
-                        "ghibli": "studio ghibli character, anime, detailed background",
-                        "portrait": "professional studio portrait photography, cinematic lighting"
+                        "movie3d": "Transform the detected person into a high-quality 3D animated movie character. Preserve the original person's pose, face position, head orientation, body position, and overall composition. Give the character huge expressive glossy brown eyes, a surprised expression, dark detailed hair, soft peach-pink skin tones, smooth polished 3D facial features, realistic glossy shading, warm cinematic lighting, subtle rim lighting, soft pastel background tones, high-quality feature-film animation style, detailed 3D rendering, cinematic depth of field, natural proportions, refined facial details",
+                        "pixar": "Transform the detected person into a high-quality 3D animated movie character. Preserve the original person's pose, face position, head orientation, body position, and overall composition. Give the character huge expressive glossy brown eyes, a surprised expression, dark detailed hair, soft peach-pink skin tones, smooth polished 3D facial features, realistic glossy shading, warm cinematic lighting, subtle rim lighting, soft pastel background tones, high-quality feature-film animation style, detailed 3D rendering, cinematic depth of field, natural proportions, refined facial details",
+                        "anime": "Transform the detected person into a refined hand-drawn anime illustration. Preserve the original person's pose, facial position, head orientation, body position, and composition. Use short black hair, calm expressive eyes, clean delicate ink lines, soft beige and warm skin tones, subtle watercolor shading, fine anime facial details, gentle line-art definition, vintage paper texture, minimalist artistic background, elegant hand-drawn appearance, refined Japanese anime illustration style, natural proportions, high-detail traditional sketch aesthetic",
+                        "cyberpunk": "Cyberpunk character with intense sharp eyes, messy black hair, futuristic techwear, neon city atmosphere, electric-blue and purple lighting, cinematic rim lighting, highly detailed, intense, futuristic aesthetic",
+                        "cyberpunk-girl": "Futuristic female cyberpunk character, expressive eyes, dark flowing hair, futuristic techwear, neon magenta and electric-blue lighting, cybernetic details, cyberpunk city atmosphere, highly detailed, intense, futuristic",
+                        "sketch": "pencil sketch portrait, highly detailed, black and white, artistic line work",
+                        "watercolor": "watercolor portrait painting, beautiful, artistic, soft flowing colors",
+                        "oil-painting": "Transform the detected person into a traditional high-quality oil painting portrait. Preserve the original person's pose, facial structure, position, expression, and composition. Use soft natural facial features, warm skin tones, expressive eyes, rich layered colors, visible delicate oil brushstrokes, realistic paint texture, subtle highlights and shadows, soft classical lighting, textured canvas appearance, elegant classical portrait style, refined painterly details, natural proportions, museum-quality oil painting aesthetic",
+                        "ghibli": "studio ghibli character, anime, detailed background, magical atmosphere",
+                        "portrait": "professional studio portrait photography, cinematic lighting, high quality"
                     };
                     
+                    // ✅ FIX: Crop the snapshot to polygon bounds BEFORE sending to AI
+                    // This prevents the recursive camera-image bug where the full frame
+                    // was being squeezed into the polygon, creating a miniature copy
+                    const croppedToPolygon = getCompositor().extractRegion(
+                        snapshotCanvasRef.current,
+                        cornersRef.current
+                    );
+                    
                     const inferRes = await backend.infer({
-                        croppedImage: snapshotCanvasRef.current,
+                        croppedImage: croppedToPolygon,  // ✅ Only the cropped region
                         polygon: cornersRef.current,
                         prompt: promptMap[style] || promptMap["movie3d"],
                         timestamp: performance.now(),
@@ -391,5 +424,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
         activeStyle,
         setActiveStyle,
         showHint,
+        fingerStates,
+        gesture,
     };
 }

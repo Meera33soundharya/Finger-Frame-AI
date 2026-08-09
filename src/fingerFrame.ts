@@ -62,6 +62,133 @@ export function toPixel(
 }
 
 // ─────────────────────────────────────────────
+//  Finger Detection & Counting
+// ─────────────────────────────────────────────
+
+export interface FingerStates {
+    thumb: boolean;
+    index: boolean;
+    middle: boolean;
+    ring: boolean;
+    pinky: boolean;
+    count: number;
+}
+
+/**
+ * Detect if individual fingers are extended.
+ * A finger is considered extended if its tip is above its PIP joint.
+ *
+ * Finger structure (example for index):
+ * - MCP (knuckle base): landmark 5
+ * - PIP (middle joint): landmark 6
+ * - DIP (tip base): landmark 7
+ * - TIP: landmark 8
+ *
+ * Extended if: tip.y < pip.y (tip is higher/above pip)
+ */
+export function detectExtendedFingers(
+    landmarks: Array<{ x: number; y: number; z: number }>
+): FingerStates {
+    if (landmarks.length < 21) {
+        return { thumb: false, index: false, middle: false, ring: false, pinky: false, count: 0 };
+    }
+
+    // Thumb: check if tip (4) is above PIP (2)
+    const thumbExtended = landmarks[4].y < landmarks[2].y - 0.01;
+
+    // Index: check if tip (8) is above PIP (6)
+    const indexExtended = landmarks[8].y < landmarks[6].y - 0.01;
+
+    // Middle: check if tip (12) is above PIP (10)
+    const middleExtended = landmarks[12].y < landmarks[10].y - 0.01;
+
+    // Ring: check if tip (16) is above PIP (14)
+    const ringExtended = landmarks[16].y < landmarks[14].y - 0.01;
+
+    // Pinky: check if tip (20) is above PIP (18)
+    const pinkyExtended = landmarks[20].y < landmarks[18].y - 0.01;
+
+    const count = [thumbExtended, indexExtended, middleExtended, ringExtended, pinkyExtended]
+        .filter(Boolean).length;
+
+    return {
+        thumb: thumbExtended,
+        index: indexExtended,
+        middle: middleExtended,
+        ring: ringExtended,
+        pinky: pinkyExtended,
+        count,
+    };
+}
+
+/**
+ * Detect common hand gestures.
+ * Returns a gesture name or null if no clear gesture detected.
+ */
+export type GestureName = "peace" | "thumbs-up" | "thumbs-down" | "rock" | "ok" | "fist" | "open-hand" | "pointing" | null;
+
+export function detectGesture(
+    landmarks: Array<{ x: number; y: number; z: number }>
+): GestureName {
+    if (landmarks.length < 21) return null;
+
+    const fingers = detectExtendedFingers(landmarks);
+    // const _wrist = landmarks[0];
+    const thumb = landmarks[4];
+    const index = landmarks[8];
+    const middle = landmarks[12];
+    // const _ring = landmarks[16];
+    const pinky = landmarks[20];
+
+    // PEACE: Index + Middle extended, others folded
+    if (fingers.index && fingers.middle && !fingers.ring && !fingers.pinky && !fingers.thumb) {
+        const spread = dist(index, middle);
+        if (spread > 0.04) return "peace";
+    }
+
+    // THUMBS UP: Only thumb extended, pointing up
+    if (fingers.count === 1 && fingers.thumb && thumb.y < landmarks[2].y - 0.05) {
+        return "thumbs-up";
+    }
+
+    // THUMBS DOWN: Only thumb extended, pointing down
+    if (fingers.count === 1 && fingers.thumb && thumb.y > landmarks[2].y + 0.05) {
+        return "thumbs-down";
+    }
+
+    // ROCK: Index + Pinky extended, middle + ring folded
+    if (fingers.index && fingers.pinky && !fingers.middle && !fingers.ring) {
+        const spread = dist(index, pinky);
+        if (spread > 0.04) return "rock";
+    }
+
+    // OK GESTURE: Thumb + Index close, others extended
+    if (fingers.thumb && fingers.index) {
+        const thumbIndexDist = dist(thumb, index);
+        if (thumbIndexDist < 0.03 && fingers.middle && fingers.ring && fingers.pinky) {
+            return "ok";
+        }
+    }
+
+    // FIST: All fingers folded
+    if (fingers.count === 0) {
+        return "fist";
+    }
+
+    // OPEN HAND: All fingers extended
+    if (fingers.count === 5) {
+        return "open-hand";
+    }
+
+    // POINTING: Only index extended
+    if (fingers.count === 1 && fingers.index) {
+        return "pointing";
+    }
+
+    return null;
+}
+
+// ─────────────────────────────────────────────
 //  Quad computation
 // ─────────────────────────────────────────────
 
