@@ -49,7 +49,7 @@ export class Compositor {
      */
     renderWarped(
         targetCtx: CanvasRenderingContext2D, 
-        image: HTMLCanvasElement, 
+        image: HTMLCanvasElement | HTMLImageElement, 
         polygon: Point[], 
         alpha: number = 1
     ) {
@@ -85,7 +85,7 @@ export class Compositor {
 
     private drawTriangle(
         ctx: CanvasRenderingContext2D,
-        img: HTMLCanvasElement,
+        img: HTMLCanvasElement | HTMLImageElement,
         src: Point[],
         dst: Point[]
     ) {

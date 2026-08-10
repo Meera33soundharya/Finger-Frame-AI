@@ -23,7 +23,7 @@ export interface InferRequest {
 }
 
 export interface InferResult {
-    outputCanvas: HTMLCanvasElement; // The AI generated image matching the bounding box
+    outputCanvas: HTMLCanvasElement | null; // The AI generated image matching the bounding box, or null if falling back
     polygon: Point[]; // The original polygon this was requested for, used for aligning back
 }
 

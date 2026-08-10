@@ -1,27 +1,16 @@
 import type { AIModelBackend, InferRequest, InferResult } from './types';
 
 // ──────────────────────────────────────────────────────────
-//  LocalStorage key for the Fal.ai API key
-// ──────────────────────────────────────────────────────────
-export const FAL_KEY_STORAGE = "finger-frame-fal-api-key";
-
-// ──────────────────────────────────────────────────────────
 //  Fal.ai Backend — calls the real stable-diffusion img2img API
+//  Authentication is now handled securely via a Vite proxy.
 // ──────────────────────────────────────────────────────────
 export class FalAIBackend implements AIModelBackend {
-    private apiKey: string;
-
-    // The Fal.ai model we target: fast-sdxl (img2img, ~1-2s on GPU)
-    // Docs: https://fal.ai/models/fal-ai/fast-sdxl
-    private static MODEL_URL = "https://fal.run/fal-ai/fast-sdxl";
-
-    constructor(apiKey: string) {
-        this.apiKey = apiKey;
-    }
+    // We target our secure Vite proxy endpoint
+    private static MODEL_URL = "/api/fal/fal-ai/fast-sdxl";
+    private authFailed = false;
 
     async initialize(): Promise<void> {
-        if (!this.apiKey) throw new Error("Fal.ai API key is required");
-        console.log("FalAIBackend initialized");
+        console.log("FalAIBackend initialized via secure proxy");
     }
 
     private _mockFallback: AsyncAIBackend | null = null;
@@ -31,7 +20,9 @@ export class FalAIBackend implements AIModelBackend {
     }
 
     async infer(request: InferRequest): Promise<InferResult> {
-        if (!this.apiKey) {
+        // If authentication failed permanently, stop spamming the proxy/backend
+        // and just immediately use the local mock fallback.
+        if (this.authFailed) {
             return this.mockFallback.infer(request);
         }
 
@@ -52,7 +43,6 @@ export class FalAIBackend implements AIModelBackend {
             const response = await fetch(FalAIBackend.MODEL_URL, {
                 method: "POST",
                 headers: {
-                    "Authorization": `Key ${this.apiKey}`,
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify(body),
@@ -60,12 +50,16 @@ export class FalAIBackend implements AIModelBackend {
 
             if (!response.ok) {
                 const errorText = await response.text();
-                console.warn(`Fal.ai API error ${response.status}: ${errorText}. Falling back to local filter.`);
-                if (response.status === 403) {
-                    console.warn("API key balance exhausted or invalid. Removing key from local storage.");
-                    localStorage.removeItem(FAL_KEY_STORAGE);
-                    this.apiKey = ""; // Disable on this instance to prevent further retries
+                
+                // On 401 or 403, it's a permanent configuration error.
+                // Do not retry. Throw a specific error to break the loop.
+                if (response.status === 401 || response.status === 403) {
+                    console.error(`Fal.ai Auth Error ${response.status}: Missing or invalid API key. Set FAL_KEY in .env`);
+                    this.authFailed = true;
+                    throw new Error("AUTH_FAILED");
                 }
+                
+                console.warn(`Fal.ai API error ${response.status}: ${errorText}. Falling back to local filter.`);
                 return this.mockFallback.infer(request);
             }
 
@@ -79,6 +73,9 @@ export class FalAIBackend implements AIModelBackend {
             const outputCanvas = await FalAIBackend.urlToCanvas(outputUrl, croppedImage.width, croppedImage.height);
             return { outputCanvas, polygon };
         } catch (e) {
+            if (e instanceof Error && e.message === "AUTH_FAILED") {
+                throw e; // Bubble up to stop the loop
+            }
             console.warn("Fal.ai inference failed completely. Falling back to local filter.", e);
             return this.mockFallback.infer(request);
         }
@@ -119,7 +116,7 @@ export class AsyncAIBackend implements AIModelBackend {
         console.log("AsyncAIBackend (mock) initialized");
     }
 
-    async infer(request: InferRequest): Promise<InferResult> {
+    async infer(_request: InferRequest): Promise<InferResult> {
         if (this.isInferring) throw new Error("Already inferring");
         this.isInferring = true;
 
@@ -127,41 +124,10 @@ export class AsyncAIBackend implements AIModelBackend {
             // Simulate ~800ms GPU latency
             await new Promise(resolve => setTimeout(resolve, 800));
 
-            const { croppedImage, polygon } = request;
-
-            const resultCanvas = document.createElement("canvas");
-            resultCanvas.width = croppedImage.width;
-            resultCanvas.height = croppedImage.height;
-            const rctx = resultCanvas.getContext("2d")!;
-
-            // Apply a cinematic-style filter to simulate an AI look
-            rctx.filter = "saturate(1.8) contrast(1.25) brightness(1.1) blur(0.4px)";
-            rctx.drawImage(croppedImage, 0, 0);
-            rctx.filter = "none";
-
-            // Bloom pass
-            rctx.globalCompositeOperation = "screen";
-            rctx.globalAlpha = 0.2;
-            const blurCanvas = document.createElement("canvas");
-            blurCanvas.width = croppedImage.width;
-            blurCanvas.height = croppedImage.height;
-            const blurCtx = blurCanvas.getContext("2d")!;
-            blurCtx.filter = "blur(8px) brightness(1.4)";
-            blurCtx.drawImage(croppedImage, 0, 0);
-            rctx.drawImage(blurCanvas, 0, 0);
-            rctx.globalAlpha = 1;
-            rctx.globalCompositeOperation = "source-over";
-
-            // Warm cinematic tint
-            rctx.globalAlpha = 0.1;
-            const grad = rctx.createLinearGradient(0, 0, 0, croppedImage.height);
-            grad.addColorStop(0, "#ffe4a0");
-            grad.addColorStop(1, "#1a0a40");
-            rctx.fillStyle = grad;
-            rctx.fillRect(0, 0, croppedImage.width, croppedImage.height);
-            rctx.globalAlpha = 1;
-
-            return { outputCanvas: resultCanvas, polygon };
+            // We don't want to return a CSS-filtered webcam crop anymore.
+            // Returning a null outputCanvas here will cause the frontend to gracefully fall back 
+            // to the local CSS filters which perfectly fits the user's requirements without spamming the console.
+            return { outputCanvas: null, polygon: _request.polygon };
         } finally {
             this.isInferring = false;
         }
@@ -171,12 +137,8 @@ export class AsyncAIBackend implements AIModelBackend {
 }
 
 // ──────────────────────────────────────────────────────────
-//  Factory — picks the right backend based on stored key
+//  Factory — picks the right backend
 // ──────────────────────────────────────────────────────────
 export function createBackend(): AIModelBackend {
-    const key = localStorage.getItem(FAL_KEY_STORAGE)?.trim();
-    if (key) {
-        return new FalAIBackend(key);
-    }
-    return new AsyncAIBackend();
+    return new FalAIBackend();
 }

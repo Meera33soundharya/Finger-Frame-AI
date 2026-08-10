@@ -6,7 +6,7 @@
 import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
 
 export interface FaceWarpResult {
-    image: HTMLCanvasElement;
+    image: HTMLCanvasElement | null;
     sourceLandmarks: NormalizedLandmark[];
     style: string;
 }
@@ -79,6 +79,7 @@ export function warpFace(
     }
 
     const { image: srcImg, sourceLandmarks: srcLm } = sourceResult;
+    if (!srcImg) return; // No image available (null canvas from mock backend)
 
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -141,7 +142,7 @@ export function warpFace(
         // Let's ensure the async loop generates a full WxH transparent canvas with the face in it, 
         // so landmarks match exactly.
         
-        ctx.drawImage(srcImg, 0, 0, w, h);
+        ctx.drawImage(srcImg!, 0, 0, w, h);
         
         ctx.restore();
     }

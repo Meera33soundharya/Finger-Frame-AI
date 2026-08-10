@@ -3,11 +3,10 @@
 //  Root React component — layout + UI chrome.
 // ============================================================
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useFingerFrame } from "./useFingerFrame";
 import { useAIStyles } from "./hooks/useAIStyles";
 import { StyleDropZone } from "./components/StyleDropZone";
-import { FAL_KEY_STORAGE } from "./ai/modelBackend";
 import "./App.css";
 
 export default function App() {
@@ -21,34 +20,14 @@ export default function App() {
         showHint,
         fingerStates,
         gesture,
+        retryCamera,
     } = useFingerFrame();
 
     const { styles, addCustomStyle } = useAIStyles();
-    const [showSettings, setShowSettings] = useState(false);
-    const [apiKey, setApiKey] = useState(() => localStorage.getItem(FAL_KEY_STORAGE) ?? "");
-    const [keySaved, setKeySaved] = useState(!!localStorage.getItem(FAL_KEY_STORAGE));
-
-    // Keep keySaved in sync with localStorage (e.g. when backend auto-clears key on 403)
-    useEffect(() => {
-        function syncKey() {
-            const saved = !!localStorage.getItem(FAL_KEY_STORAGE);
-            setKeySaved(saved);
-            if (!saved) setApiKey("");
-        }
-        // Poll every 2s for key removal by the backend (no cross-window storage event needed)
-        const interval = setInterval(syncKey, 2000);
-        window.addEventListener("storage", syncKey);
-        return () => {
-            clearInterval(interval);
-            window.removeEventListener("storage", syncKey);
-        };
-    }, []);
 
     // ── Keyboard shortcuts ─────────────────────────────────────
     useEffect(() => {
         function onKey(e: KeyboardEvent) {
-            if (e.key === "Escape") { setShowSettings(false); return; }
-            if (e.key === ",") { setShowSettings(v => !v); return; }
             const num = parseInt(e.key, 10);
             if (!isNaN(num)) {
                 const idx = num === 0 ? 9 : num - 1;
@@ -62,18 +41,7 @@ export default function App() {
     const activeStyleDef = styles.find((s) => s.id === activeStyle) || styles[0];
     const hintRef = useRef<HTMLDivElement>(null);
 
-    function saveKey() {
-        const trimmed = apiKey.trim();
-        if (trimmed) {
-            localStorage.setItem(FAL_KEY_STORAGE, trimmed);
-        } else {
-            localStorage.removeItem(FAL_KEY_STORAGE);
-        }
-        setKeySaved(!!trimmed);
-        setShowSettings(false);
-        // Reload to re-init backend with new key
-        window.location.reload();
-    }
+    // saveKey is no longer needed
 
     return (
         <main className="app">
@@ -85,9 +53,14 @@ export default function App() {
                             <div className="overlay__icon">⚠️</div>
                             <p className="overlay__title">Could not start</p>
                             <p className="overlay__message">{errorMessage}</p>
-                            <button className="overlay__reload" onClick={() => window.location.reload()}>
-                                Reload
-                            </button>
+                            <div style={{display: 'flex', gap: '10px'}}>
+                                <button className="overlay__reload" onClick={retryCamera}>
+                                    Retry Camera
+                                </button>
+                                <button className="overlay__reload" onClick={() => window.location.reload()}>
+                                    Reload App
+                                </button>
+                            </div>
                         </>
                     ) : (
                         <>
@@ -102,52 +75,7 @@ export default function App() {
                 </div>
             )}
 
-            {/* ═══ Settings Modal ══════════════════════════════ */}
-            {showSettings && (
-                <div className="settings-overlay" onClick={() => setShowSettings(false)}>
-                    <div className="settings-modal" onClick={e => e.stopPropagation()}>
-                        <div className="settings-modal__header">
-                            <h2 className="settings-modal__title">⚙️ Settings</h2>
-                            <button className="settings-modal__close" onClick={() => setShowSettings(false)}>✕</button>
-                        </div>
-
-                        <div className="settings-modal__section">
-                            <label className="settings-modal__label" htmlFor="fal-key-input">
-                                🔑 Fal.ai API Key
-                            </label>
-                            <p className="settings-modal__hint">
-                                Get your free key at <a href="https://fal.ai/keys" target="_blank" rel="noopener noreferrer">fal.ai/keys</a>.<br />
-                                Without a key, a high-quality <b>mock filter</b> is used instead.
-                            </p>
-                            <input
-                                id="fal-key-input"
-                                className="settings-modal__input"
-                                type="password"
-                                value={apiKey}
-                                onChange={e => setApiKey(e.target.value)}
-                                placeholder="fal_…"
-                                autoComplete="off"
-                                spellCheck={false}
-                            />
-                            <div className="settings-modal__status">
-                                {keySaved
-                                    ? <span className="settings-modal__status--ok">✅ Fal.ai connected — real AI inference active</span>
-                                    : <span className="settings-modal__status--warn">⚠️ No key saved — using mock filter</span>
-                                }
-                            </div>
-                        </div>
-
-                        <div className="settings-modal__actions">
-                            <button className="settings-modal__save" onClick={saveKey}>
-                                Save &amp; Reload
-                            </button>
-                            <button className="settings-modal__cancel" onClick={() => setShowSettings(false)}>
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            {/* Settings Modal Removed (Backend Proxy in use) */}
 
             {/* ═══ Stage ═══════════════════════════════════════ */}
             <div className="stage">
@@ -203,28 +131,7 @@ export default function App() {
                     </div>
                 )}
 
-                {/* ── Settings button ── */}
-                {status === "ready" && (
-                    <button
-                        id="settings-btn"
-                        className={`settings-btn${keySaved ? " settings-btn--connected" : " settings-btn--attention"}`}
-                        onClick={() => {
-                            // Re-sync from localStorage in case backend auto-cleared the key
-                            const currentKey = localStorage.getItem(FAL_KEY_STORAGE) ?? "";
-                            setApiKey(currentKey);
-                            setKeySaved(!!currentKey);
-                            setShowSettings(true);
-                        }}
-                        title="Settings (press ,)"
-                        aria-label="Open settings"
-                    >
-                        <span className="settings-btn__icon">⚙️</span>
-                        {keySaved
-                            ? <span className="settings-btn__label">AI Connected</span>
-                            : <span className="settings-btn__label">Add API Key</span>
-                        }
-                    </button>
-                )}
+
 
                 {/* ── Style badge ── */}
                 {status === "ready" && (
@@ -235,7 +142,7 @@ export default function App() {
                     >
                         <span className="style-badge__label">{activeStyleDef.label}</span>
                         <span className="style-badge__desc">
-                            {keySaved ? "🤖 Real AI" : "🎨 Mock"} · {activeStyleDef.label}
+                            🤖 Real AI · {activeStyleDef.label}
                         </span>
                     </div>
                 )}

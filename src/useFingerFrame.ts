@@ -68,6 +68,7 @@ export interface UseFingerFrameReturn {
     showHint: boolean;
     fingerStates: FingerStates | null;
     gesture: GestureName;
+    retryCamera: () => void;
 }
 
 export function useFingerFrame(): UseFingerFrameReturn {
@@ -273,6 +274,86 @@ export function useFingerFrame(): UseFingerFrameReturn {
         rafIdRef.current = requestAnimationFrame(loop);
     }
 
+    const startCamera = async (isRetry = false) => {
+        try {
+            if (isRetry) {
+                setStatus("requesting-camera");
+                setErrorMessage("");
+            }
+
+            if (!navigator.mediaDevices?.getUserMedia) {
+                throw new Error("Camera API is not supported");
+            }
+
+            if (videoRef.current?.srcObject) {
+                (videoRef.current.srcObject as MediaStream)
+                    .getTracks()
+                    .forEach(track => track.stop());
+                videoRef.current.srcObject = null;
+            }
+
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false
+            });
+
+            const video = videoRef.current;
+            if (!video) {
+                stream.getTracks().forEach(track => track.stop());
+                return;
+            }
+
+            video.srcObject = stream;
+            video.muted = true;
+            video.playsInline = true;
+            video.autoplay = true;
+
+            await new Promise<void>(resolve => {
+                if (video.readyState >= 1) {
+                    resolve();
+                } else {
+                    video.onloadedmetadata = () => resolve();
+                }
+            });
+
+            await video.play();
+
+            if (!video.videoWidth || !video.videoHeight) {
+                throw new Error("Camera started but video dimensions are unavailable");
+            }
+
+            console.log("[Camera] Started:", video.videoWidth, "x", video.videoHeight);
+
+            const canvas = canvasRef.current;
+            canvas.width = video.videoWidth || 1280;
+            canvas.height = video.videoHeight || 720;
+            
+            snapshotCanvasRef.current.width = canvas.width;
+            snapshotCanvasRef.current.height = canvas.height;
+
+            setStatus("ready");
+            if (!rafIdRef.current) {
+                rafIdRef.current = requestAnimationFrame(loop);
+            }
+            
+            // Start Async AI Loop
+            if (!isRetry) {
+                runAiLoop();
+            }
+
+        } catch (error) {
+            console.error("[Camera] Failed to start:", error);
+            const msg = error instanceof Error ? 
+                (error.name === "NotAllowedError" ? "Camera permission denied. Please allow camera access." :
+                 error.name === "NotFoundError" ? "No camera found." :
+                 error.name === "NotReadableError" ? "Camera is being used by another application." :
+                 error.message) 
+                : "Could not start video source";
+            setErrorMessage(msg);
+            setStatus("error");
+        }
+    };
+
     useEffect(() => {
         let cancelled = false;
 
@@ -289,41 +370,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 trackerRef.current = tracker;
                 faceTrackerRef.current = faceTracker;
 
-                setStatus("requesting-camera");
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                        frameRate: { ideal: 30 },
-                        facingMode: "user",
-                    },
-                    audio: false,
-                });
-                if (cancelled) {
-                    stream.getTracks().forEach((t) => t.stop());
-                    return;
-                }
-
-                const video = videoRef.current;
-                video.srcObject = stream;
-                await new Promise<void>((res) => {
-                    video.onloadedmetadata = () => res();
-                });
-                await video.play();
-
-                const canvas = canvasRef.current;
-                canvas.width = video.videoWidth || 1280;
-                canvas.height = video.videoHeight || 720;
-                
-                snapshotCanvasRef.current.width = canvas.width;
-                snapshotCanvasRef.current.height = canvas.height;
-
-                setStatus("ready");
-                rafIdRef.current = requestAnimationFrame(loop);
-                
-                // Start Async AI Loop
-                runAiLoop();
-                
+                await startCamera();
             } catch (err) {
                 if (cancelled) return;
                 const msg = err instanceof Error ? 
@@ -371,8 +418,8 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 const result = faceTracker.detectForVideo(video, performance.now());
                 if (result.faceLandmarks && result.faceLandmarks.length > 0) {
                     const promptMap: Record<string, string> = {
-                        "movie3d": "Transform the detected person into a high-quality 3D animated movie character. Preserve the original person's pose, face position, head orientation, body position, and overall composition. Give the character huge expressive glossy brown eyes, a surprised expression, dark detailed hair, soft peach-pink skin tones, smooth polished 3D facial features, realistic glossy shading, warm cinematic lighting, subtle rim lighting, soft pastel background tones, high-quality feature-film animation style, detailed 3D rendering, cinematic depth of field, natural proportions, refined facial details",
-                        "pixar": "Transform the detected person into a high-quality 3D animated movie character. Preserve the original person's pose, face position, head orientation, body position, and overall composition. Give the character huge expressive glossy brown eyes, a surprised expression, dark detailed hair, soft peach-pink skin tones, smooth polished 3D facial features, realistic glossy shading, warm cinematic lighting, subtle rim lighting, soft pastel background tones, high-quality feature-film animation style, detailed 3D rendering, cinematic depth of field, natural proportions, refined facial details",
+                        "movie3d": "High-quality 3D animated character portrait designed specifically for a real-time finger-frame camera filter, expressive large brown eyes, friendly surprised expression, natural dark hair, soft peach-pink skin tones, polished cinematic movie-animation quality, smooth realistic 3D facial shading, detailed eyes and hair, soft studio lighting, clean pastel background, centered face and upper body, front-facing composition, symmetrical composition, character looking directly at the camera, no text, no watermark, no border, no frame, no extra people, no duplicated face, high detail, sharp focus, consistent character proportions, 4K-quality render.",
+                        "pixar": "High-quality 3D animated character portrait designed specifically for a real-time finger-frame camera filter, expressive large brown eyes, friendly surprised expression, natural dark hair, soft peach-pink skin tones, polished cinematic movie-animation quality, smooth realistic 3D facial shading, detailed eyes and hair, soft studio lighting, clean pastel background, centered face and upper body, front-facing composition, symmetrical composition, character looking directly at the camera, no text, no watermark, no border, no frame, no extra people, no duplicated face, high detail, sharp focus, consistent character proportions, 4K-quality render.",
                         "anime": "Transform the detected person into a refined hand-drawn anime illustration. Preserve the original person's pose, facial position, head orientation, body position, and composition. Use short black hair, calm expressive eyes, clean delicate ink lines, soft beige and warm skin tones, subtle watercolor shading, fine anime facial details, gentle line-art definition, vintage paper texture, minimalist artistic background, elegant hand-drawn appearance, refined Japanese anime illustration style, natural proportions, high-detail traditional sketch aesthetic",
                         "cyberpunk": "Cyberpunk character with intense sharp eyes, messy black hair, futuristic techwear, neon city atmosphere, electric-blue and purple lighting, cinematic rim lighting, highly detailed, intense, futuristic aesthetic",
                         "cyberpunk-girl": "Futuristic female cyberpunk character, expressive eyes, dark flowing hair, futuristic techwear, neon magenta and electric-blue lighting, cybernetic details, cyberpunk city atmosphere, highly detailed, intense, futuristic",
@@ -399,13 +446,23 @@ export function useFingerFrame(): UseFingerFrameReturn {
                         presence: presenceRef.current
                     });
                     
-                    latestAiResultRef.current = {
-                        image: inferRes.outputCanvas,
-                        sourceLandmarks: result.faceLandmarks[0],
-                        style: style
-                    };
+                    // Only store the result if we actually got a canvas (real AI backend)
+                    if (inferRes.outputCanvas) {
+                        latestAiResultRef.current = {
+                            image: inferRes.outputCanvas,
+                            sourceLandmarks: result.faceLandmarks[0],
+                            style: style
+                        };
+                    }
                 }
             } catch (e) {
+                if (e instanceof Error && e.message === "AUTH_FAILED") {
+                    console.error("Authentication failed. Stopping AI generation loop.");
+                    setErrorMessage("Fal.ai Authentication Failed. Check .env configuration.");
+                    setStatus("error");
+                    isInferringRef.current = false;
+                    return; // Stop the loop entirely
+                }
                 console.warn("Async AI inference failed", e);
             } finally {
                 isInferringRef.current = false;
@@ -426,5 +483,6 @@ export function useFingerFrame(): UseFingerFrameReturn {
         showHint,
         fingerStates,
         gesture,
+        retryCamera: () => startCamera(true),
     };
 }
