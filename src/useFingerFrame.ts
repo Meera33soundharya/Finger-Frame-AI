@@ -161,7 +161,8 @@ export function useFingerFrame(): UseFingerFrameReturn {
         if (video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
             lastVideoTimeRef.current = video.currentTime;
             try {
-                const results = tracker.detectForVideo(video, performance.now());
+                const imageSize = { width: video.videoWidth, height: video.videoHeight };
+                const results = tracker.detectForVideo(video, performance.now(), { imageProcessingOptions: { imageSize } });
                 if (results?.landmarks?.length >= 1) {
                     targetQuad = computeQuad(results.landmarks, w, h, frameActiveRef.current);
                     
@@ -177,7 +178,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
                     }
                 }
                 
-                faceResult = faceTracker.detectForVideo(video, performance.now());
+                faceResult = faceTracker.detectForVideo(video, performance.now(), { imageProcessingOptions: { imageSize } });
             } catch {
                 // Ignore detection throws before video is stable
             }
@@ -415,7 +416,8 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 snapCtx.restore();
                 
                 // Must get landmarks *at this exact moment*
-                const result = faceTracker.detectForVideo(video, performance.now());
+                const aiImageSize = { width: video.videoWidth, height: video.videoHeight };
+                const result = faceTracker.detectForVideo(video, performance.now(), { imageProcessingOptions: { imageSize: aiImageSize } });
                 if (result.faceLandmarks && result.faceLandmarks.length > 0) {
                     const promptMap: Record<string, string> = {
                         "movie3d": "High-quality 3D animated character portrait designed specifically for a real-time finger-frame camera filter, expressive large brown eyes, friendly surprised expression, natural dark hair, soft peach-pink skin tones, polished cinematic movie-animation quality, smooth realistic 3D facial shading, detailed eyes and hair, soft studio lighting, clean pastel background, centered face and upper body, front-facing composition, symmetrical composition, character looking directly at the camera, no text, no watermark, no border, no frame, no extra people, no duplicated face, high detail, sharp focus, consistent character proportions, 4K-quality render.",
