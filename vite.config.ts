@@ -7,6 +7,9 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: {
+      port: 5173,
+      strictPort: true,
+      host: "localhost",
       proxy: {
         '/api/fal': {
           target: 'https://fal.run',

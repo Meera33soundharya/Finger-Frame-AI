@@ -53,10 +53,16 @@ export class Compositor {
         polygon: Point[], 
         alpha: number = 1
     ) {
-        targetCtx.save();
-        targetCtx.globalAlpha = alpha;
+        // Guard: need exactly 4 corners and a loaded image
+        if (polygon.length < 4) return;
+        const imgW = image.width;
+        const imgH = image.height;
+        if (imgW <= 0 || imgH <= 0) return;
 
-        // Clip to the exact polygon to ensure we don't bleed outside
+        targetCtx.save();
+        targetCtx.globalAlpha = Math.max(0, Math.min(1, alpha));
+
+        // Clip to the exact polygon so we never bleed outside
         targetCtx.beginPath();
         targetCtx.moveTo(polygon[0].x, polygon[0].y);
         for (let i = 1; i < polygon.length; i++) {
@@ -65,18 +71,18 @@ export class Compositor {
         targetCtx.closePath();
         targetCtx.clip();
 
-        // Split the quad into two triangles and draw them
-        // Triangle 1: 0, 1, 2
+        // Split the quad into two triangles for affine warping
+        // Triangle 1: top-left → top-right → bottom-right (src) mapped to polygon[0,1,2]
         this.drawTriangle(
             targetCtx, image,
-            [{x: 0, y: 0}, {x: image.width, y: 0}, {x: image.width, y: image.height}],
+            [{x: 0, y: 0}, {x: imgW, y: 0}, {x: imgW, y: imgH}],
             [polygon[0], polygon[1], polygon[2]]
         );
 
-        // Triangle 2: 0, 2, 3
+        // Triangle 2: top-left → bottom-right → bottom-left (src) mapped to polygon[0,2,3]
         this.drawTriangle(
             targetCtx, image,
-            [{x: 0, y: 0}, {x: image.width, y: image.height}, {x: 0, y: image.height}],
+            [{x: 0, y: 0}, {x: imgW, y: imgH}, {x: 0, y: imgH}],
             [polygon[0], polygon[2], polygon[3]]
         );
 
