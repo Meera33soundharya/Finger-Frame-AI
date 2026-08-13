@@ -86,18 +86,20 @@ function gradientWash(
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  applyLocalFilter — called EVERY FRAME inside the finger-frame polygon
-//  NOTE: _polygon and _filterImage params kept for API compatibility but unused
 // ═══════════════════════════════════════════════════════════════════════════════
 export function applyLocalFilter(
     ctx: CanvasRenderingContext2D,
     video: HTMLVideoElement,
     w: number,
     h: number,
-    _polygon: Point[],
+    _quad: Point[],
     style: StyleId,
     time: number,
-    _filterImage: HTMLImageElement | null
+    filterImage: HTMLImageElement | null
 ) {
+    // We want the live webcam effects to run. If an AI image asset is passed,
+    // we can draw it on top with a blend mode, but we must run the live effect first.
+    
     const { offA, ctxA, offB, ctxB } = ensureOffscreen(w, h);
 
     switch (style) {

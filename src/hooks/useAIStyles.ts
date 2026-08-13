@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { STYLES as PREDEFINED_STYLES } from '../effects';
-import type { StyleDef } from '../effects';
+import { STYLES as PREDEFINED_STYLES } from '../styles/effects';
+import type { StyleDef } from '../styles/effects';
 import { loadCustomStyles, saveCustomStyle } from '../ai/customStyles';
 
 export function useAIStyles() {

@@ -9,6 +9,8 @@
 //     interrupt the hot loop.
 //   - A module-level tracker singleton prevents double-init under
 //     React StrictMode.
+//   - GPU delegate is tried first; on failure the singleton is rebuilt
+//     with CPU delegate so the webcam keeps running.
 // ============================================================
 
 import { useRef, useState, useEffect, useCallback } from "react";
@@ -16,11 +18,11 @@ import {
     FilesetResolver,
     HandLandmarker,
 } from "@mediapipe/tasks-vision";
-import { computeQuad, dist, lerpPt } from "./fingerFrame";
-import type { Point } from "./fingerFrame";
-import { drawFrameOutline, STYLES, createFrameState } from "./effects";
-import type { StyleId, FrameState } from "./effects";
-import { applyLocalFilter } from "./filters";
+import { computeQuad, dist, lerpPt } from "./rendering/fingerFrameRenderer";
+import type { Point } from "./rendering/fingerFrameRenderer";
+import { drawFrameOutline, STYLES, createFrameState } from "./styles/effects";
+import type { StyleId, FrameState } from "./styles/effects";
+import { applyLocalFilter } from "./styles/filters";
 
 // ── MediaPipe asset paths (served from /public/) ─────────────────────
 const WASM_PATH  = "/wasm";
@@ -28,27 +30,43 @@ const MODEL_PATH = "/models/hand_landmarker.task";
 
 // ── Module-level singleton (survives StrictMode double-mount) ─────────
 let _trackerSingleton: HandLandmarker | null = null;
-let _trackerPromise: Promise<HandLandmarker> | null = null;
+let _trackerPromise:   Promise<HandLandmarker> | null = null;
+
+async function buildHandTracker(
+    vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>,
+    delegate: "GPU" | "CPU"
+): Promise<HandLandmarker> {
+    return HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+            modelAssetPath: MODEL_PATH,
+            delegate,
+        },
+        runningMode: "VIDEO",
+        numHands: 2,
+        minHandDetectionConfidence: 0.3,
+        minHandPresenceConfidence:  0.3,
+        minTrackingConfidence:      0.3,
+    });
+}
 
 async function getHandTracker(): Promise<HandLandmarker> {
     if (_trackerSingleton) return _trackerSingleton;
-    if (_trackerPromise) return _trackerPromise;
+    if (_trackerPromise)   return _trackerPromise;
 
     _trackerPromise = (async () => {
         const vision = await FilesetResolver.forVisionTasks(WASM_PATH);
-        const tracker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: {
-                modelAssetPath: MODEL_PATH,
-                delegate: "GPU",
-            },
-            runningMode: "VIDEO",
-            numHands: 2,
-            minHandDetectionConfidence: 0.3,
-            minHandPresenceConfidence:  0.3,
-            minTrackingConfidence:      0.3,
-        });
+
+        let tracker: HandLandmarker;
+        try {
+            tracker = await buildHandTracker(vision, "GPU");
+            console.log("[HandTracker] GPU ready");
+        } catch (gpuErr) {
+            console.warn("[HandTracker] GPU unavailable, using CPU fallback:", gpuErr);
+            tracker = await buildHandTracker(vision, "CPU");
+            console.log("[HandTracker] CPU fallback ready");
+        }
+
         _trackerSingleton = tracker;
-        console.log("[HandTracker] MediaPipe HandLandmarker ready");
         return tracker;
     })();
 
@@ -57,8 +75,19 @@ async function getHandTracker(): Promise<HandLandmarker> {
 
 // All filters use live webcam — no static asset preloading needed.
 
+// ── Asset preloader ───────────────────────────────────────────────────
+const loadedAssets = new Map<StyleId, HTMLImageElement>();
+function getAsset(style: StyleId): HTMLImageElement | null {
+    if (loadedAssets.has(style)) return loadedAssets.get(style)!;
+
+    const img = new Image();
+    img.src = `/assets/filter_${style}.png`;
+    loadedAssets.set(style, img);
+    return img;
+}
+
 // ── Smoothing / hold constants ────────────────────────────────────────
-const MAX_LOST_FRAMES    = 25;
+const MAX_LOST_FRAMES     = 25;
 const JUMP_CONFIRM_FRAMES = 2;
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -99,6 +128,9 @@ export function useFingerFrame(): UseFingerFrameReturn {
     const trackerRef       = useRef<HandLandmarker | null>(null);
     const rafIdRef         = useRef(0);
     const streamRef        = useRef<MediaStream | null>(null);
+
+    // Guard: prevent concurrent detectForVideo calls
+    const detectingRef     = useRef(false);
 
     // Quad smoothing
     const cornersRef       = useRef<Point[] | null>(null);
@@ -155,8 +187,8 @@ export function useFingerFrame(): UseFingerFrameReturn {
         }
 
         // Sync canvas size to live video dimensions
-        const vw = video.videoWidth  || 1280;
-        const vh = video.videoHeight || 720;
+        const vw = video.videoWidth  || 640;
+        const vh = video.videoHeight || 480;
         if (canvas.width !== vw || canvas.height !== vh) {
             canvas.width  = vw;
             canvas.height = vh;
@@ -169,17 +201,26 @@ export function useFingerFrame(): UseFingerFrameReturn {
         // 1. Base layer: mirrored live webcam
         drawMirroredVideo(ctx, w, h, video);
 
-        // 2. MediaPipe hand detection (only on new video frames)
+        // 2. MediaPipe hand detection (only on new video frames,
+        //    only when the video has actual pixel data, no concurrent calls)
         let targetQuad: Point[] | null = null;
-        if (video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
+        const hasData = video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+        if (
+            hasData &&
+            !detectingRef.current &&
+            video.currentTime !== lastVideoTimeRef.current
+        ) {
             lastVideoTimeRef.current = video.currentTime;
+            detectingRef.current = true;
             try {
                 const results = tracker.detectForVideo(video, performance.now());
                 if (results?.landmarks?.length >= 1) {
                     targetQuad = computeQuad(results.landmarks, w, h, frameActiveRef.current);
                 }
             } catch {
-                // Ignore detection errors before video is fully stable
+                // Ignore transient detection errors (video not yet stable, etc.)
+            } finally {
+                detectingRef.current = false;
             }
         }
 
@@ -240,8 +281,9 @@ export function useFingerFrame(): UseFingerFrameReturn {
             ctx.closePath();
             ctx.clip();
 
-            // Apply per-style visual filter (all live webcam)
-            applyLocalFilter(ctx, video, w, h, quad, style, t, null);
+            // Apply per-style visual filter
+            const filterImg = getAsset(style);
+            applyLocalFilter(ctx, video, w, h, quad, style, t, filterImg || null);
 
             ctx.restore();
 
@@ -277,24 +319,18 @@ export function useFingerFrame(): UseFingerFrameReturn {
             }
             if (videoRef.current) videoRef.current.srcObject = null;
 
-            // Try HD first, fall back to SD
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+                video: { width: 640, height: 480, facingMode: "user" },
                 audio: false,
-            }).catch(() =>
-                navigator.mediaDevices.getUserMedia({
-                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
-                    audio: false,
-                })
-            );
+            });
 
             streamRef.current = stream;
 
             const video = videoRef.current;
             if (!video) throw new Error("Video element not mounted");
 
-            video.srcObject  = stream;
-            video.muted      = true;
+            video.srcObject   = stream;
+            video.muted       = true;
             video.playsInline = true;
 
             await new Promise<void>(resolve => {
@@ -306,14 +342,14 @@ export function useFingerFrame(): UseFingerFrameReturn {
             // Sync canvas immediately
             const canvas = canvasRef.current;
             if (canvas) {
-                canvas.width  = video.videoWidth  || 1280;
-                canvas.height = video.videoHeight || 720;
+                canvas.width  = video.videoWidth  || 640;
+                canvas.height = video.videoHeight || 480;
             }
 
-            console.log(`[Camera] ${video.videoWidth} × ${video.videoHeight}`);
+            console.log(`[Camera] Started: ${video.videoWidth} x ${video.videoHeight}`);
             setStatus("ready");
 
-            // (Re)start render loop
+            // (Re)start render loop — cancel any stale loop first
             cancelAnimationFrame(rafIdRef.current);
             rafIdRef.current = requestAnimationFrame(loop);
 
@@ -339,6 +375,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
             try {
                 setStatus("loading-tracker");
 
+                // GPU→CPU fallback is handled inside getHandTracker()
                 const tracker = await getHandTracker();
                 if (cancelled) return;
                 trackerRef.current = tracker;
@@ -356,9 +393,12 @@ export function useFingerFrame(): UseFingerFrameReturn {
 
         return () => {
             cancelled = true;
+
+            // Stop render loop
             cancelAnimationFrame(rafIdRef.current);
             rafIdRef.current = 0;
 
+            // Stop camera tracks only on unmount
             if (streamRef.current) {
                 streamRef.current.getTracks().forEach(t => t.stop());
                 streamRef.current = null;
@@ -366,12 +406,14 @@ export function useFingerFrame(): UseFingerFrameReturn {
             if (videoRef.current) {
                 videoRef.current.srcObject = null;
             }
+
             // Reset smoothing state so retry starts clean
-            cornersRef.current  = null;
-            presenceRef.current = 0;
+            cornersRef.current     = null;
+            presenceRef.current    = 0;
             frameActiveRef.current = false;
             lostFramesRef.current  = 0;
             jumpFramesRef.current  = 0;
+            detectingRef.current   = false;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);

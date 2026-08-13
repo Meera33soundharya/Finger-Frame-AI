@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 """Composite an AI-restyled video inside a tracked finger frame.
 
 Tracks the finger-frame gesture (both hands, index + thumb "L"s) in the
