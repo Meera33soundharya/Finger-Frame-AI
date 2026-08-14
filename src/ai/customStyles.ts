@@ -1,4 +1,4 @@
-import type { StyleDef } from '../effects';
+import type { StyleDef } from '../styles/effects';
 
 const STORAGE_KEY = "finger-frame-custom-styles";
 

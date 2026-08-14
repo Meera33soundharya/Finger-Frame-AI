@@ -19,13 +19,20 @@ export default function App() {
         setActiveStyle,
         showHint,
         retryCamera,
+        captureFrame,
     } = useFingerFrame();
 
     const { styles, addCustomStyle } = useAIStyles();
 
-    // ── Keyboard shortcuts ─────────────────────────────────────
+    // ── Keyboard shortcuts ─────────────────────────────────────────────────
     useEffect(() => {
         function onKey(e: KeyboardEvent) {
+            // S / s — screenshot
+            if (e.key === "s" || e.key === "S") {
+                captureFrame();
+                return;
+            }
+            // 1-9, 0 — style picker
             const num = parseInt(e.key, 10);
             if (!isNaN(num)) {
                 const idx = num === 0 ? 9 : num - 1;
@@ -34,12 +41,10 @@ export default function App() {
         }
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [setActiveStyle, styles]);
+    }, [setActiveStyle, styles, captureFrame]);
 
     const activeStyleDef = styles.find((s) => s.id === activeStyle) || styles[0];
     const hintRef = useRef<HTMLDivElement>(null);
-
-    // saveKey is no longer needed
 
     return (
         <main className="app">
@@ -64,8 +69,8 @@ export default function App() {
                         <>
                             <div className="spinner" aria-label="Loading" />
                             <p className="overlay__message">
-                                {status === "idle" && "Initialising…"}
-                                {status === "loading-tracker" && "Loading hand tracker…"}
+                                {status === "idle"              && "Initialising…"}
+                                {status === "loading-tracker"   && "Loading hand tracker…"}
                                 {status === "requesting-camera" && "Requesting camera…"}
                             </p>
                         </>
@@ -73,64 +78,87 @@ export default function App() {
                 </div>
             )}
 
-            {/* Settings Modal Removed (Backend Proxy in use) */}
-
             {/* ═══ Stage ═══════════════════════════════════════ */}
             <div className="stage">
-                <video
-                    ref={videoRef}
-                    className="stage__video"
-                    autoPlay
-                    playsInline
-                    muted
-                    aria-hidden="true"
-                />
-                <canvas ref={canvasRef} className="stage__canvas" />
+                <div className="stage__inner">
+                    <video
+                        ref={videoRef}
+                        className="stage__video"
+                        autoPlay
+                        playsInline
+                        muted
+                        aria-hidden="true"
+                    />
+                    <canvas ref={canvasRef} className="stage__canvas" />
 
-                {/* ── Live pill ── */}
-                {status === "ready" && (
-                    <div className="live-pill" aria-label="Live camera active">
-                        <span className="live-pill__dot" />
-                        <span className="live-pill__text">LIVE</span>
-                    </div>
-                )}
+                    {/* ── Live pill ── */}
+                    {status === "ready" && (
+                        <div className="live-pill" aria-label="Live camera active">
+                            <span className="live-pill__dot" />
+                            <span className="live-pill__text">LIVE</span>
+                        </div>
+                    )}
 
+                    {/* ── Capture button ── */}
+                    {status === "ready" && (
+                        <button
+                            id="capture-btn"
+                            className="capture-btn"
+                            onClick={captureFrame}
+                            title="Save screenshot  [S]"
+                            aria-label="Capture photo"
+                        >
+                            <span className="capture-btn__ring" aria-hidden="true" />
+                            <span className="capture-btn__icon" aria-hidden="true">📸</span>
+                        </button>
+                    )}
 
+                    {/* ── Style badge ── */}
+                    {status === "ready" && (
+                        <div
+                            key={activeStyle}
+                            className="style-badge"
+                            style={{ "--accent": activeStyleDef.accentColor } as React.CSSProperties}
+                        >
+                            <span className="style-badge__label">{activeStyleDef.label}</span>
+                            <span className="style-badge__desc">
+                                🤖 Real AI · {activeStyleDef.label}
+                            </span>
+                        </div>
+                    )}
 
-                {/* ── Style badge ── */}
-                {status === "ready" && (
+                    {status === "ready" && (
+                        <StyleDropZone onStyleCreated={(newStyle) => {
+                            addCustomStyle(newStyle);
+                            setActiveStyle(newStyle.id);
+                        }} />
+                    )}
+
+                    {/* ── Gesture guide pill (top-center) ── */}
+                    {status === "ready" && (
+                        <div className="gesture-guide" aria-label="Gesture shortcuts">
+                            <span title="Peace = next style">✌️ Next</span>
+                            <span className="gesture-guide__sep">·</span>
+                            <span title="Rock = prev style">🤟 Prev</span>
+                            <span className="gesture-guide__sep">·</span>
+                            <span title="Point + hold = screenshot">☝️ Photo</span>
+                        </div>
+                    )}
+
+                    {/* ── Gesture hint ── */}
                     <div
-                        key={activeStyle}
-                        className="style-badge"
-                        style={{ "--accent": activeStyleDef.accentColor } as React.CSSProperties}
+                        ref={hintRef}
+                        className={`hint${showHint && status === "ready" ? " hint--visible" : ""}`}
+                        aria-hidden="true"
                     >
-                        <span className="style-badge__label">{activeStyleDef.label}</span>
-                        <span className="style-badge__desc">
-                            🤖 Real AI · {activeStyleDef.label}
-                        </span>
+                        <div className="hint__hands">
+                            <span className="hint__hand hint__hand--left">🤙</span>
+                            <span className="hint__hand hint__hand--right">🤙</span>
+                        </div>
+                        <p className="hint__text">
+                            Frame your shot — both hands up, thumbs &amp; index fingers out
+                        </p>
                     </div>
-                )}
-
-                {status === "ready" && (
-                    <StyleDropZone onStyleCreated={(newStyle) => {
-                        addCustomStyle(newStyle);
-                        setActiveStyle(newStyle.id);
-                    }} />
-                )}
-
-                {/* ── Gesture hint ── */}
-                <div
-                    ref={hintRef}
-                    className={`hint${showHint && status === "ready" ? " hint--visible" : ""}`}
-                    aria-hidden="true"
-                >
-                    <div className="hint__hands">
-                        <span className="hint__hand hint__hand--left">🤙</span>
-                        <span className="hint__hand hint__hand--right">🤙</span>
-                    </div>
-                    <p className="hint__text">
-                        Frame your shot — both hands up, thumbs &amp; index fingers out
-                    </p>
                 </div>
             </div>
 

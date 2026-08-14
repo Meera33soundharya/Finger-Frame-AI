@@ -1,17 +1,21 @@
 // ============================================================
 //  filters.ts
 //  Real-time local visual filter pipeline.
-//  ALL filters use LIVE webcam — no static images, no AI backend.
 //
-//  Each style applies a unique combination of:
-//   - CSS filters (saturate/contrast/brightness/hue/blur)
-//   - Canvas composite blending modes
-//   - Colour overlay washes & gradients
-//   - Animated pulsing effects (time-based)
+//  Priority:
+//   1. GPU WebGL shaders (glFilters.ts) — real pixel-level art transforms
+//   2. CSS filter + composite (fallback for devices without WebGL)
+//
+//  The WebGL path is tried first. If it succeeds (returns true),
+//  we skip the CSS path entirely. If WebGL is not available or
+//  the shader isn't loaded yet, we run the CSS pipeline below.
 // ============================================================
 
-import type { Point } from "./fingerFrame";
+import type { Point } from "../rendering/fingerFrameRenderer";
 import type { StyleId } from "./effects";
+import { applyGLFilter } from "./glFilters";
+import { processCyberpunkFilterCPU } from "../rendering/cyberpunkFilterCPU";
+import { processAnimeFilterCPU } from "../rendering/animeFilterCPU";
 
 // ── Two persistent offscreen canvases (never destroyed, reused every frame) ──
 let offA: HTMLCanvasElement | null = null;
@@ -92,20 +96,41 @@ export function applyLocalFilter(
     video: HTMLVideoElement,
     w: number,
     h: number,
-    _quad: Point[],
+    quad: Point[],
     style: StyleId,
     time: number,
     filterImage: HTMLImageElement | null
 ) {
-    // We want the live webcam effects to run. If an AI image asset is passed,
-    // we can draw it on top with a blend mode, but we must run the live effect first.
-    
+    // ── Static asset fast path (e.g. pre-rendered filter PNG) ────────────────
+    if (filterImage && filterImage.complete && filterImage.naturalWidth > 0) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const p of quad) {
+            minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+            maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+        }
+        const qW = maxX - minX;
+        const qH = maxY - minY;
+        const imgRatio  = filterImage.naturalWidth / filterImage.naturalHeight;
+        const quadRatio = qW / qH;
+        let drawW = qW, drawH = qH;
+        if (imgRatio > quadRatio) drawW = qH * imgRatio;
+        else                      drawH = qW / imgRatio;
+        const drawX = minX + (qW - drawW) / 2;
+        const drawY = minY + (qH - drawH) / 2;
+        ctx.drawImage(filterImage, drawX, drawY, drawW, drawH);
+        return;
+    }
+
+    // ── GPU path: WebGL shader ────────────────────────────────────────────────
+    const gpuDone = applyGLFilter(ctx, video, w, h, quad, style, time);
+    if (gpuDone) return;
+
+    // ── CPU fallback: CSS composite filters ──────────────────────────────────
     const { offA, ctxA, offB, ctxB } = ensureOffscreen(w, h);
 
     switch (style) {
 
         // ── 3D MOVIE ─────────────────────────────────────────────────────────
-        // Warm golden hour cinema look: punchy saturation + amber grade
         case "movie3d": {
             drawLive(ctx, video, w, h, "saturate(2.2) contrast(1.3) brightness(1.1)");
             colorWash(ctx, w, h, "rgba(255, 170, 50, 0.22)", "overlay");
@@ -114,70 +139,49 @@ export function applyLocalFilter(
         }
 
         // ── ANIME ─────────────────────────────────────────────────────────────
-        // Soft-line illustration look: punchy colours + warm magenta sheen
         case "anime": {
-            drawLive(ctx, video, w, h, "saturate(2.0) contrast(1.25) brightness(1.1) hue-rotate(8deg)");
-            colorWash(ctx, w, h, "rgba(255, 90, 170, 0.18)", "screen");
-            colorWash(ctx, w, h, "rgba(200, 230, 255, 0.10)", "soft-light");
+            processAnimeFilterCPU(video, ctx, w, h, time);
             break;
         }
 
         // ── CYBER BOY ─────────────────────────────────────────────────────────
-        // Teal-shifted neon city night
         case "cyberpunk": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "saturate(3) contrast(1.5) brightness(0.75) hue-rotate(160deg)");
-            ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, `rgba(0, 220, 255, ${0.12 + 0.05 * Math.sin(time * 2.8)})`, "screen");
-            colorWash(ctx, w, h, `rgba(0, 80, 180, ${0.08 + 0.04 * Math.cos(time * 1.5)})`, "overlay");
+            processCyberpunkFilterCPU(video, ctx, w, h, time, false);
             break;
         }
 
         // ── CYBER GIRL ────────────────────────────────────────────────────────
-        // Magenta-purple neon dusk — identical pipeline to what was already working
         case "cyberpunk-girl": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "saturate(3) contrast(1.4) brightness(0.8) hue-rotate(180deg)");
-            ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, `rgba(255, 0, 180, ${0.15 + 0.05 * Math.sin(time * 3)})`, "screen");
-            colorWash(ctx, w, h, `rgba(0, 255, 255, ${0.10 + 0.04 * Math.cos(time * 2.5)})`, "screen");
+            processCyberpunkFilterCPU(video, ctx, w, h, time, true);
             break;
         }
 
         // ── WATERCOLOR ───────────────────────────────────────────────────────
-        // Two-pass soft-blur + sharp-detail composite, warm paper overlay
         case "watercolor": {
             ctxA.clearRect(0, 0, w, h);
             drawLive(ctxA, video, w, h, "saturate(1.7) contrast(1.1) brightness(1.2) blur(4px)");
-
             ctxB.clearRect(0, 0, w, h);
             drawLive(ctxB, video, w, h, "saturate(1.4) contrast(1.6) brightness(1.0)");
-
             ctx.drawImage(offA, 0, 0);
             ctx.save();
             ctx.globalAlpha = 0.30;
             ctx.drawImage(offB, 0, 0);
             ctx.restore();
-
             colorWash(ctx, w, h, "rgba(240, 222, 190, 0.50)", "multiply");
             colorWash(ctx, w, h, "rgba(255, 195, 175, 0.18)", "overlay");
             break;
         }
 
         // ── SKETCH ───────────────────────────────────────────────────────────
-        // Classic pencil-sketch colour-dodge: grey base + inverted blur = edges
         case "sketch": {
             ctxA.clearRect(0, 0, w, h);
             drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.15)");
-
             ctxB.clearRect(0, 0, w, h);
             drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(5px)");
-
             ctxA.save();
             ctxA.globalCompositeOperation = "color-dodge";
             ctxA.drawImage(offB, 0, 0);
             ctxA.restore();
-
             ctx.drawImage(offA, 0, 0);
             colorWash(ctx, w, h, "rgba(228, 218, 196, 0.58)", "multiply");
             colorWash(ctx, w, h, "rgba(75, 65, 55, 0.06)", "overlay");
@@ -185,7 +189,6 @@ export function applyLocalFilter(
         }
 
         // ── OIL PAINTING ─────────────────────────────────────────────────────
-        // Rich layered oils: heavy saturation + warm amber glaze
         case "oil-painting": {
             ctxA.clearRect(0, 0, w, h);
             drawLive(ctxA, video, w, h, "saturate(2.0) contrast(1.4) brightness(1.05) blur(1.5px)");
@@ -195,19 +198,17 @@ export function applyLocalFilter(
             break;
         }
 
-        // ── GHIBLI ───────────────────────────────────────────────────────────
-        // Dreamy watercolour with sky-blue sheen + warm paper
-        case "ghibli": {
+        // ── HAND-DRAWN ANIME ─────────────────────────────────────────────────
+        case "hand-drawn-anime": {
             ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "saturate(2.0) contrast(1.08) brightness(1.28) blur(3.5px)");
+            drawLive(ctxA, video, w, h, "grayscale(0.7) contrast(1.15) brightness(1.05) blur(1px)");
             ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(255, 235, 195, 0.42)", "multiply");
-            colorWash(ctx, w, h, "rgba(100, 195, 255, 0.14)", "screen");
+            colorWash(ctx, w, h, "rgba(245, 235, 220, 0.45)", "multiply");
+            colorWash(ctx, w, h, "rgba(20, 15, 10, 0.08)", "overlay");
             break;
         }
 
         // ── PIXAR ────────────────────────────────────────────────────────────
-        // Bold, vibrant 3D cartoon — high sat + purple accent
         case "pixar": {
             drawLive(ctx, video, w, h, "saturate(2.5) contrast(1.35) brightness(1.12)");
             colorWash(ctx, w, h, "rgba(150, 80, 255, 0.18)", "overlay");
@@ -216,7 +217,6 @@ export function applyLocalFilter(
         }
 
         // ── PORTRAIT ─────────────────────────────────────────────────────────
-        // Soft cinematic beauty: warm top, cool shadow bottom
         case "portrait": {
             drawLive(ctx, video, w, h, "saturate(1.35) contrast(1.12) brightness(1.06)");
             gradientWash(ctx, w, h, "rgba(255, 215, 160, 0.28)", "rgba(25, 15, 55, 0.28)", "overlay");

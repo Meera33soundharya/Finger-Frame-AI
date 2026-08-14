@@ -11,6 +11,8 @@
 //     React StrictMode.
 //   - GPU delegate is tried first; on failure the singleton is rebuilt
 //     with CPU delegate so the webcam keeps running.
+//   - detectGesture() is called each frame; debounced gestures trigger
+//     style cycling (peace=next, rock=prev) or screenshot (pointing hold).
 // ============================================================
 
 import { useRef, useState, useEffect, useCallback } from "react";
@@ -18,7 +20,7 @@ import {
     FilesetResolver,
     HandLandmarker,
 } from "@mediapipe/tasks-vision";
-import { computeQuad, dist, lerpPt } from "./rendering/fingerFrameRenderer";
+import { computeQuad, dist, lerpPt, detectGesture } from "./rendering/fingerFrameRenderer";
 import type { Point } from "./rendering/fingerFrameRenderer";
 import { drawFrameOutline, STYLES, createFrameState } from "./styles/effects";
 import type { StyleId, FrameState } from "./styles/effects";
@@ -75,7 +77,7 @@ async function getHandTracker(): Promise<HandLandmarker> {
 
 // All filters use live webcam — no static asset preloading needed.
 
-// ── Asset preloader ───────────────────────────────────────────────────
+// ── Asset preloader ───────────────────────────────────────────────────────────
 const loadedAssets = new Map<StyleId, HTMLImageElement>();
 function getAsset(style: StyleId): HTMLImageElement | null {
     if (loadedAssets.has(style)) return loadedAssets.get(style)!;
@@ -86,11 +88,15 @@ function getAsset(style: StyleId): HTMLImageElement | null {
     return img;
 }
 
-// ── Smoothing / hold constants ────────────────────────────────────────
+// ── Smoothing / hold constants ────────────────────────────────────────────────
 const MAX_LOST_FRAMES     = 25;
 const JUMP_CONFIRM_FRAMES = 2;
 
-// ── Types ─────────────────────────────────────────────────────────────
+// ── Gesture debounce ──────────────────────────────────────────────────────────
+const GESTURE_COOLDOWN_MS  = 600;  // ms between style switches
+const POINTING_HOLD_MS     = 1500; // ms hold to trigger screenshot
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type Status =
     | "idle"
@@ -108,23 +114,25 @@ export interface UseFingerFrameReturn {
     setActiveStyle: (id: StyleId) => void;
     showHint:       boolean;
     retryCamera:    () => void;
+    captureFrame:   () => void;
 }
 
-// ── Hook ──────────────────────────────────────────────────────────────
+// ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useFingerFrame(): UseFingerFrameReturn {
 
     const videoRef  = useRef<HTMLVideoElement>(null!);
     const canvasRef = useRef<HTMLCanvasElement>(null!);
 
-    // ── React UI state ────────────────────────────────────────────────
+    // ── React UI state ────────────────────────────────────────────────────────
     const [status,       setStatus]       = useState<Status>("idle");
     const [errorMessage, setErrorMessage] = useState("");
     const [activeStyle,  setActiveStyleState] = useState<StyleId>("movie3d");
     const [showHint,     setShowHint]     = useState(true);
 
-    // ── Mutable refs (hot path — never cause re-renders) ─────────────
+    // ── Mutable refs (hot path — never cause re-renders) ─────────────────────
     const styleRef         = useRef<StyleId>("movie3d");
+    const stylesRef        = useRef<StyleId[]>(STYLES.map(s => s.id));
     const trackerRef       = useRef<HandLandmarker | null>(null);
     const rafIdRef         = useRef(0);
     const streamRef        = useRef<MediaStream | null>(null);
@@ -147,13 +155,68 @@ export function useFingerFrame(): UseFingerFrameReturn {
     // Hint debounce
     const showHintRef = useRef(true);
 
-    // ── setActiveStyle ────────────────────────────────────────────────
+    // Gesture debounce
+    const lastGestureTimeRef    = useRef(0);
+    const pointingStartTimeRef  = useRef(0);
+    const lastGestureNameRef    = useRef<string | null>(null);
+
+    // ── setActiveStyle ────────────────────────────────────────────────────────
     const setActiveStyle = useCallback((id: StyleId) => {
         styleRef.current = id;
         setActiveStyleState(id);
     }, []);
 
-    // ── Helpers ───────────────────────────────────────────────────────
+    // Keep stylesRef in sync when new custom styles added via toolbar
+    // (App.tsx passes the full styles list through keyboard shortcut handler)
+    const updateStylesList = useCallback((ids: StyleId[]) => {
+        stylesRef.current = ids;
+    }, []);
+    // Expose so App.tsx can call it (unused for now — handled inline below)
+    void updateStylesList;
+
+    // ── Screenshot / frame capture ────────────────────────────────────────────
+    const captureFrame = useCallback(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        try {
+            // Draw to a same-size offscreen canvas (avoids tainted canvas issues)
+            const off = document.createElement("canvas");
+            off.width  = canvas.width;
+            off.height = canvas.height;
+            const offCtx = off.getContext("2d")!;
+            offCtx.drawImage(canvas, 0, 0);
+
+            off.toBlob((blob) => {
+                if (!blob) return;
+                const url = URL.createObjectURL(blob);
+                const a   = document.createElement("a");
+                a.href     = url;
+                a.download = `finger-frame-${Date.now()}.png`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }, "image/png");
+        } catch (e) {
+            console.warn("[captureFrame] Failed:", e);
+        }
+    }, []);
+
+    // ── Cycle style helpers ───────────────────────────────────────────────────
+    const nextStyle = useCallback(() => {
+        const ids = stylesRef.current;
+        const idx = ids.indexOf(styleRef.current);
+        const next = ids[(idx + 1) % ids.length];
+        setActiveStyle(next);
+    }, [setActiveStyle]);
+
+    const prevStyle = useCallback(() => {
+        const ids = stylesRef.current;
+        const idx = ids.indexOf(styleRef.current);
+        const prev = ids[(idx - 1 + ids.length) % ids.length];
+        setActiveStyle(prev);
+    }, [setActiveStyle]);
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     function drawMirroredVideo(
         ctx: CanvasRenderingContext2D,
@@ -168,7 +231,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
         ctx.restore();
     }
 
-    // ── Main RAF render loop ──────────────────────────────────────────
+    // ── Main RAF render loop ──────────────────────────────────────────────────
 
     function loop() {
         const video   = videoRef.current;
@@ -198,6 +261,12 @@ export function useFingerFrame(): UseFingerFrameReturn {
         const h = canvas.height;
         const t = performance.now() / 1000;
 
+        // Reset canvas state every animation frame
+        ctx.clearRect(0, 0, w, h);
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = "source-over";
+        ctx.filter = "none";
+
         // 1. Base layer: mirrored live webcam
         drawMirroredVideo(ctx, w, h, video);
 
@@ -213,9 +282,42 @@ export function useFingerFrame(): UseFingerFrameReturn {
             lastVideoTimeRef.current = video.currentTime;
             detectingRef.current = true;
             try {
-                const results = tracker.detectForVideo(video, performance.now());
+                const timestampMs = Math.round(performance.now());
+                const results = tracker.detectForVideo(video, timestampMs);
                 if (results?.landmarks?.length >= 1) {
                     targetQuad = computeQuad(results.landmarks, w, h, frameActiveRef.current);
+
+                    // ── Gesture handling ─────────────────────────────────────
+                    const now = performance.now();
+                    const firstHand = results.landmarks[0];
+                    const gesture = detectGesture(firstHand);
+
+                    if (gesture !== lastGestureNameRef.current) {
+                        lastGestureNameRef.current = gesture;
+                        // Reset pointing timer on gesture change
+                        pointingStartTimeRef.current = gesture === "pointing" ? now : 0;
+                    }
+
+                    const cooldownOk = now - lastGestureTimeRef.current > GESTURE_COOLDOWN_MS;
+
+                    if (gesture === "peace" && cooldownOk) {
+                        lastGestureTimeRef.current = now;
+                        nextStyle();
+                    } else if (gesture === "rock" && cooldownOk) {
+                        lastGestureTimeRef.current = now;
+                        prevStyle();
+                    } else if (gesture === "pointing") {
+                        // Held-pointing = screenshot after POINTING_HOLD_MS
+                        if (
+                            pointingStartTimeRef.current > 0 &&
+                            now - pointingStartTimeRef.current > POINTING_HOLD_MS &&
+                            cooldownOk
+                        ) {
+                            lastGestureTimeRef.current = now;
+                            pointingStartTimeRef.current = 0;
+                            captureFrame();
+                        }
+                    }
                 }
             } catch {
                 // Ignore transient detection errors (video not yet stable, etc.)
@@ -305,7 +407,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
         rafIdRef.current = requestAnimationFrame(loop);
     }
 
-    // ── Camera start ──────────────────────────────────────────────────
+    // ── Camera start ──────────────────────────────────────────────────────────
 
     const startCamera = useCallback(async () => {
         try {
@@ -366,7 +468,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // ── Initialization (once, StrictMode-safe) ────────────────────────
+    // ── Initialization (once, StrictMode-safe) ────────────────────────────────
 
     useEffect(() => {
         let cancelled = false;
@@ -418,7 +520,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // ── Public API ────────────────────────────────────────────────────
+    // ── Public API ────────────────────────────────────────────────────────────
 
     return {
         videoRef,
@@ -429,5 +531,6 @@ export function useFingerFrame(): UseFingerFrameReturn {
         setActiveStyle,
         showHint,
         retryCamera: startCamera,
+        captureFrame,
     };
 }

@@ -198,13 +198,32 @@ body,
    Stage (camera + canvas)
 ──────────────────────────────────────────── */
 
+/* Stage outer wrapper — centres the preview area */
 .stage {
     position: relative;
+    /* Available height = viewport minus toolbar + gap */
+    flex: 1 1 auto;
     width: 100%;
-    height: calc(100% - var(--toolbar-h) - 16px);
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
+    padding: 12px 16px;
+}
+
+/* Inner frame — enforces 4:3 at a comfortable smaller size */
+.stage__inner {
+    position: relative;
+    /* Responsive: fills available space but never exceeds 720px wide or
+       the available height (converted to 4:3 equivalent width).         */
+    width: min(720px, 100%, calc((100vh - var(--toolbar-h) - 48px) * 4 / 3));
+    aspect-ratio: 4 / 3;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    box-shadow:
+        0 0 0 1px rgba(168, 85, 247, 0.12),
+        0 4px 48px rgba(0, 0, 0, 0.75),
+        0 0 80px rgba(6, 182, 212, 0.06);
 }
 
 .stage__video {
@@ -212,7 +231,7 @@ body,
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: cover;
     display: block;
 }
 
@@ -221,15 +240,10 @@ body,
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
     display: block;
     pointer-events: none;
     border-radius: var(--radius-md);
     border: 1px solid rgba(6, 182, 212, 0.1);
-    box-shadow:
-        0 0 0 1px rgba(168, 85, 247, 0.06),
-        0 4px 48px rgba(0, 0, 0, 0.75),
-        0 0 100px rgba(6, 182, 212, 0.03);
     image-rendering: auto;
 }
 

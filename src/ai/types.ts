@@ -1,4 +1,4 @@
-import type { Point } from '../fingerFrame';
+import type { Point } from '../rendering/fingerFrameRenderer';
 
 export interface StyleAnalysis {
     id: string;
