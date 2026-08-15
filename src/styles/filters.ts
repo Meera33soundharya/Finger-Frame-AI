@@ -88,6 +88,9 @@ function gradientWash(
     ctx.restore();
 }
 
+// ── Debug mode flag — set window.__FFDebug = true in console to enable ─────────
+declare global { interface Window { __FFDebug?: boolean; } }
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  applyLocalFilter — called EVERY FRAME inside the finger-frame polygon
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -101,7 +104,37 @@ export function applyLocalFilter(
     time: number,
     filterImage: HTMLImageElement | null
 ) {
-    // ── Static asset fast path (e.g. pre-rendered filter PNG) ────────────────
+    const dbg = typeof window !== "undefined" && window.__FFDebug;
+
+    if (dbg) {
+        const minX = Math.min(...quad.map(p => p.x));
+        const minY = Math.min(...quad.map(p => p.y));
+        const maxX = Math.max(...quad.map(p => p.x));
+        const maxY = Math.max(...quad.map(p => p.y));
+        console.log(`[Polygon] Points: ${quad.map(p => `(${p.x.toFixed(0)},${p.y.toFixed(0)})`).join(' ')}`);
+        console.log(`[Polygon] Width: ${(maxX - minX).toFixed(0)}  Height: ${(maxY - minY).toFixed(0)}`);
+        console.log(`[Filter] Processing polygon — style: ${style}`);
+    }
+
+    // ── DEBUG overlay: show polygon mask in green/white/red ─────────────────────
+    if (dbg) {
+        // GREEN polygon outline
+        ctx.save();
+        ctx.strokeStyle = "lime";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        quad.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+        ctx.closePath();
+        ctx.stroke();
+        // WHITE mask fill (semi-transparent)
+        ctx.fillStyle = "rgba(255,255,255,0.25)";
+        ctx.fill();
+        ctx.restore();
+        if (dbg) console.log(`[Mask] Debug overlay drawn`);
+        return;
+    }
+
+    // ── Static asset fast path (pre-rendered filter PNG) ──────────────────────
     if (filterImage && filterImage.complete && filterImage.naturalWidth > 0) {
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const p of quad) {
@@ -118,45 +151,51 @@ export function applyLocalFilter(
         const drawX = minX + (qW - drawW) / 2;
         const drawY = minY + (qH - drawH) / 2;
         ctx.drawImage(filterImage, drawX, drawY, drawW, drawH);
+        if (dbg) console.log(`[Composite] Static asset rendered inside polygon`);
         return;
     }
 
-    // ── GPU path: WebGL shader ────────────────────────────────────────────────
+    // ── GPU path: WebGL shader ────────────────────────────────────────────
+    // The GL canvas renders the full-frame filtered image, then blits only the
+    // bounding-box region. The ctx is already clipped to the polygon, so only
+    // polygon pixels get painted. UV X is mirrored in the vertex shader.
     const gpuDone = applyGLFilter(ctx, video, w, h, quad, style, time);
-    if (gpuDone) return;
+    if (gpuDone) {
+        if (dbg) console.log(`[Composite] GL shader rendered inside polygon`);
+        return;
+    }
 
-    // ── CPU fallback: CSS composite filters ──────────────────────────────────
+    // ── CPU fallback: Canvas2D composite filters ───────────────────────────
+    // These draw the full webcam frame (with CSS filter) onto ctx, which is
+    // already clipped to the polygon. Only polygon pixels are painted.
     const { offA, ctxA, offB, ctxB } = ensureOffscreen(w, h);
 
     switch (style) {
 
-        // ── 3D MOVIE ─────────────────────────────────────────────────────────
-        case "movie3d": {
-            drawLive(ctx, video, w, h, "saturate(2.2) contrast(1.3) brightness(1.1)");
-            colorWash(ctx, w, h, "rgba(255, 170, 50, 0.22)", "overlay");
-            colorWash(ctx, w, h, "rgba(255, 200, 100, 0.08)", "screen");
+        // ── CINEMATIC: warm + skin smooth ─────────────────────────────────
+        case "cinematic": {
+            drawLive(ctx, video, w, h, "saturate(1.35) contrast(1.12) brightness(1.06)");
+            gradientWash(ctx, w, h, "rgba(255,215,160,0.28)", "rgba(25,15,55,0.28)", "overlay");
+            colorWash(ctx, w, h, "rgba(255,180,180,0.08)", "soft-light");
             break;
         }
 
-        // ── ANIME ─────────────────────────────────────────────────────────────
-        case "anime": {
-            processAnimeFilterCPU(video, ctx, w, h, time);
+        // ── EDITORIAL INK: pencil sketch ─────────────────────────────────
+        case "editorial-ink": {
+            ctxA.clearRect(0, 0, w, h);
+            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.15)");
+            ctxB.clearRect(0, 0, w, h);
+            drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(5px)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "color-dodge";
+            ctxA.drawImage(offB, 0, 0);
+            ctxA.restore();
+            ctx.drawImage(offA, 0, 0);
+            colorWash(ctx, w, h, "rgba(228,218,196,0.58)", "multiply");
             break;
         }
 
-        // ── CYBER BOY ─────────────────────────────────────────────────────────
-        case "cyberpunk": {
-            processCyberpunkFilterCPU(video, ctx, w, h, time, false);
-            break;
-        }
-
-        // ── CYBER GIRL ────────────────────────────────────────────────────────
-        case "cyberpunk-girl": {
-            processCyberpunkFilterCPU(video, ctx, w, h, time, true);
-            break;
-        }
-
-        // ── WATERCOLOR ───────────────────────────────────────────────────────
+        // ── WATERCOLOR: Kuwahara-like painted ──────────────────────────────
         case "watercolor": {
             ctxA.clearRect(0, 0, w, h);
             drawLive(ctxA, video, w, h, "saturate(1.7) contrast(1.1) brightness(1.2) blur(4px)");
@@ -167,12 +206,76 @@ export function applyLocalFilter(
             ctx.globalAlpha = 0.30;
             ctx.drawImage(offB, 0, 0);
             ctx.restore();
-            colorWash(ctx, w, h, "rgba(240, 222, 190, 0.50)", "multiply");
-            colorWash(ctx, w, h, "rgba(255, 195, 175, 0.18)", "overlay");
+            colorWash(ctx, w, h, "rgba(240,222,190,0.50)", "multiply");
+            colorWash(ctx, w, h, "rgba(255,195,175,0.18)", "overlay");
             break;
         }
 
-        // ── SKETCH ───────────────────────────────────────────────────────────
+        // ── FILM NOIR: desaturated + high contrast + vignette ────────────────
+        case "film-noir": {
+            drawLive(ctx, video, w, h, "grayscale(100%) contrast(1.55) brightness(0.92)");
+            colorWash(ctx, w, h, "rgba(0,0,0,0.18)", "multiply");
+            break;
+        }
+
+        // ── GRAPHITE: pencil drawing ──────────────────────────────────────
+        case "graphite": {
+            ctxA.clearRect(0, 0, w, h);
+            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.15)");
+            ctxB.clearRect(0, 0, w, h);
+            drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(5px)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "color-dodge";
+            ctxA.drawImage(offB, 0, 0);
+            ctxA.restore();
+            ctx.drawImage(offA, 0, 0);
+            colorWash(ctx, w, h, "rgba(200,200,210,0.45)", "multiply");
+            break;
+        }
+
+        // ── SOFT 3D: vibrant Pixar-like ─────────────────────────────────────
+        case "soft-3d": {
+            drawLive(ctx, video, w, h, "saturate(2.5) contrast(1.35) brightness(1.12)");
+            colorWash(ctx, w, h, "rgba(150,80,255,0.18)", "overlay");
+            colorWash(ctx, w, h, "rgba(255,220,80,0.10)", "screen");
+            break;
+        }
+
+        // ── CYBER EDITORIAL: neon cyberpunk ────────────────────────────────
+        case "cyber-editorial": {
+            processCyberpunkFilterCPU(video, ctx, w, h, time, false);
+            break;
+        }
+
+        // ── VINTAGE FILM: warm amber oil ──────────────────────────────────
+        case "vintage-film": {
+            ctxA.clearRect(0, 0, w, h);
+            drawLive(ctxA, video, w, h, "saturate(2.0) contrast(1.4) brightness(1.05) blur(1.5px)");
+            ctx.drawImage(offA, 0, 0);
+            colorWash(ctx, w, h, "rgba(200,130,60,0.22)", "overlay");
+            colorWash(ctx, w, h, "rgba(255,210,130,0.10)", "screen");
+            break;
+        }
+
+        // ── Legacy IDs (kept for backward compat) ────────────────────────────
+        case "movie3d": {
+            drawLive(ctx, video, w, h, "saturate(2.2) contrast(1.3) brightness(1.1)");
+            colorWash(ctx, w, h, "rgba(255,170,50,0.22)", "overlay");
+            colorWash(ctx, w, h, "rgba(255,200,100,0.08)", "screen");
+            break;
+        }
+        case "anime": {
+            processAnimeFilterCPU(video, ctx, w, h, time);
+            break;
+        }
+        case "cyberpunk": {
+            processCyberpunkFilterCPU(video, ctx, w, h, time, false);
+            break;
+        }
+        case "cyberpunk-girl": {
+            processCyberpunkFilterCPU(video, ctx, w, h, time, true);
+            break;
+        }
         case "sketch": {
             ctxA.clearRect(0, 0, w, h);
             drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.15)");
@@ -183,22 +286,16 @@ export function applyLocalFilter(
             ctxA.drawImage(offB, 0, 0);
             ctxA.restore();
             ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(228, 218, 196, 0.58)", "multiply");
-            colorWash(ctx, w, h, "rgba(75, 65, 55, 0.06)", "overlay");
+            colorWash(ctx, w, h, "rgba(228,218,196,0.58)", "multiply");
             break;
         }
-
-        // ── OIL PAINTING ─────────────────────────────────────────────────────
         case "oil-painting": {
             ctxA.clearRect(0, 0, w, h);
             drawLive(ctxA, video, w, h, "saturate(2.0) contrast(1.4) brightness(1.05) blur(1.5px)");
             ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(200, 130, 60, 0.22)", "overlay");
-            colorWash(ctx, w, h, "rgba(255, 210, 130, 0.10)", "screen");
+            colorWash(ctx, w, h, "rgba(200,130,60,0.22)", "overlay");
             break;
         }
-
-        // ── HAND-DRAWN ANIME ─────────────────────────────────────────────────
         case "hand-drawn-anime": {
             ctxA.clearRect(0, 0, w, h);
             drawLive(ctxA, video, w, h, "grayscale(0.7) contrast(1.15) brightness(1.05) blur(1px)");

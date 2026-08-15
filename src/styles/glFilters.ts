@@ -21,13 +21,17 @@ import type { StyleId } from "./effects";
 import type { Point } from "../rendering/fingerFrameRenderer";
 
 // ── Vertex shader (shared across all programs) ────────────────────────────────
+// NOTE: v_uv.x is flipped (1.0 - a_uv.x) to match the mirrored canvas.
+// The main canvas draws the webcam mirrored (scale(-1,1)), so the GL
+// texture must be sampled right-to-left to stay aligned with the polygon.
 const VERT_SRC = /* glsl */ `
     attribute vec2 a_pos;
     attribute vec2 a_uv;
     varying vec2 v_uv;
     void main() {
         gl_Position = vec4(a_pos, 0.0, 1.0);
-        v_uv = a_uv;
+        // Mirror X so filtered pixels align with the mirrored webcam canvas
+        v_uv = vec2(1.0 - a_uv.x, a_uv.y);
     }
 `;
 
@@ -771,17 +775,28 @@ const FRAG_PORTRAIT = FRAG_HEADER + /* glsl */ `
 `;
 
 // ── Shader source map ─────────────────────────────────────────────────────────
+// Maps CURRENT StyleId values (from effects.ts) to GLSL shaders.
+// Legacy IDs are kept as fallback for any custom styles still using them.
 const SHADER_SRC: Partial<Record<StyleId, string>> = {
-    sketch:           FRAG_SKETCH,
-    watercolor:       FRAG_WATERCOLOR,
-    anime:            FRAG_ANIME,
+    // ── Current style IDs (effects.ts STYLES array) ───────────────────────
+    cinematic:          FRAG_PORTRAIT,          // skin-smooth + warm bokeh
+    "editorial-ink":    FRAG_SKETCH,            // Sobel pencil on paper
+    watercolor:         FRAG_WATERCOLOR,        // Kuwahara painting
+    "film-noir":        FRAG_SKETCH,            // edge-based + will get b&w via CSS fallback
+    graphite:           FRAG_SKETCH,            // pencil / graphite
+    "soft-3d":          FRAG_PIXAR,             // smooth + vivid 3D look
+    "cyber-editorial":  FRAG_CYBERPUNK,         // full anime+neon pipeline
+    "vintage-film":     FRAG_OIL_PAINTING,      // warm Kuwahara + amber grade
+    // ── Legacy IDs (kept for backward compat) ────────────────────────────
+    sketch:             FRAG_SKETCH,
+    anime:              FRAG_ANIME,
     "hand-drawn-anime": FRAG_HAND_DRAWN_ANIME,
-    "oil-painting":   FRAG_OIL_PAINTING,
-    cyberpunk:        FRAG_CYBERPUNK,
-    "cyberpunk-girl": FRAG_CYBERPUNK_GIRL,
-    movie3d:          FRAG_MOVIE3D,
-    pixar:            FRAG_PIXAR,
-    portrait:         FRAG_PORTRAIT,
+    "oil-painting":     FRAG_OIL_PAINTING,
+    cyberpunk:          FRAG_CYBERPUNK,
+    "cyberpunk-girl":   FRAG_CYBERPUNK_GIRL,
+    movie3d:            FRAG_MOVIE3D,
+    pixar:              FRAG_PIXAR,
+    portrait:           FRAG_PORTRAIT,
 };
 
 // ── WebGL state ───────────────────────────────────────────────────────────────
