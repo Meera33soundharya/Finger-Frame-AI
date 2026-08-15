@@ -163,25 +163,27 @@ export default function App() {
             </div>
 
             {/* ═══ Bottom toolbar ══════════════════════════════ */}
-            <nav className="toolbar" aria-label="Effect styles">
-                {styles.map((style) => (
-                    <button
-                        key={style.id}
-                        id={`style-btn-${style.id}`}
-                        className={`toolbar__btn${activeStyle === style.id ? " toolbar__btn--active" : ""}`}
-                        style={{ "--accent": style.accentColor } as React.CSSProperties}
-                        onClick={() => setActiveStyle(style.id)}
-                        title={style.description}
-                        aria-pressed={activeStyle === style.id}
-                    >
-                        <span className="toolbar__btn-key">{style.shortcut}</span>
-                        <span className="toolbar__btn-label">{style.label}</span>
-                        {activeStyle === style.id && (
-                            <span className="toolbar__btn-dot" style={{ background: style.accentColor }} />
-                        )}
-                    </button>
-                ))}
-            </nav>
+            <div className="toolbar-wrap">
+                <p className="toolbar-hint">
+                    Frame your shot 📷 — both hands up, thumbs and index fingers out.
+                </p>
+                <nav className="toolbar" aria-label="Effect styles">
+                    {styles.map((style) => (
+                        <button
+                            key={style.id}
+                            id={`style-btn-${style.id}`}
+                            className={`toolbar__btn${activeStyle === style.id ? " toolbar__btn--active" : ""}`}
+                            style={{ "--accent": style.accentColor } as React.CSSProperties}
+                            onClick={() => setActiveStyle(style.id)}
+                            title={style.description}
+                            aria-pressed={activeStyle === style.id}
+                        >
+                            <span className="toolbar__btn-key">{style.shortcut}</span>
+                            <span className="toolbar__btn-label">{style.label}</span>
+                        </button>
+                    ))}
+                </nav>
+            </div>
         </main>
     );
 }

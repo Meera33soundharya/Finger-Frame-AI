@@ -18,7 +18,7 @@
 // ============================================================
 
 import type { StyleId } from "./effects";
-import type { Point } from "../rendering/fingerFrameRenderer";
+// No Point import
 
 // ── Vertex shader (shared across all programs) ────────────────────────────────
 // NOTE: v_uv.x is flipped (1.0 - a_uv.x) to match the mirrored canvas.
@@ -777,7 +777,7 @@ const FRAG_PORTRAIT = FRAG_HEADER + /* glsl */ `
 // ── Shader source map ─────────────────────────────────────────────────────────
 // Maps CURRENT StyleId values (from effects.ts) to GLSL shaders.
 // Legacy IDs are kept as fallback for any custom styles still using them.
-const SHADER_SRC: Partial<Record<StyleId, string>> = {
+export const SHADER_SRC: Record<string, string> = {
     // ── Current style IDs (effects.ts STYLES array) ───────────────────────
     cinematic:          FRAG_PORTRAIT,          // skin-smooth + warm bokeh
     "editorial-ink":    FRAG_SKETCH,            // Sobel pencil on paper
@@ -823,8 +823,8 @@ function getGL(): WebGLRenderingContext | null {
 
     glCanvas = document.createElement("canvas");
     const ctx =
-        glCanvas.getContext("webgl", { alpha: false, antialias: false }) ??
-        glCanvas.getContext("experimental-webgl", { alpha: false, antialias: false }) as WebGLRenderingContext | null;
+        glCanvas.getContext("webgl", { alpha: false, antialias: false, preserveDrawingBuffer: true }) ??
+        glCanvas.getContext("experimental-webgl", { alpha: false, antialias: false, preserveDrawingBuffer: true }) as WebGLRenderingContext | null;
 
     if (!ctx) {
         console.warn("[glFilters] WebGL not available — using CSS pipeline");
@@ -915,19 +915,17 @@ function getProgram(style: StyleId): GLProgram | null {
  *          (caller should fall back to CSS pipeline)
  */
 export function applyGLFilter(
-    ctx: CanvasRenderingContext2D,
     video: HTMLVideoElement,
     w: number,
     h: number,
-    quad: Point[],
     style: StyleId,
     time: number
-): boolean {
+): HTMLCanvasElement | null {
     const glCtx = getGL();
-    if (!glCtx) return false;
+    if (!glCtx) return null;
 
     const prog = getProgram(style);
-    if (!prog) return false;
+    if (!prog) return null;
 
     // Resize WebGL canvas to match
     if (glCanvas!.width !== w || glCanvas!.height !== h) {
@@ -944,7 +942,7 @@ export function applyGLFilter(
         glCtx.texImage2D(glCtx.TEXTURE_2D, 0, glCtx.RGBA, glCtx.RGBA, glCtx.UNSIGNED_BYTE, video);
     } catch {
         // Video not ready yet
-        return false;
+        return null;
     }
 
     // Use shader program
@@ -965,22 +963,7 @@ export function applyGLFilter(
 
     glCtx.drawArrays(glCtx.TRIANGLE_STRIP, 0, 4);
 
-    // Blit back to Canvas2D — clip to the quad region bounding box
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const p of quad) {
-        minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-        maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
-    }
-    const bx = Math.max(0, Math.floor(minX));
-    const by = Math.max(0, Math.floor(minY));
-    const bw = Math.min(w - bx, Math.ceil(maxX - minX));
-    const bh = Math.min(h - by, Math.ceil(maxY - minY));
-
-    if (bw > 0 && bh > 0) {
-        ctx.drawImage(glCanvas!, bx, by, bw, bh, bx, by, bw, bh);
-    }
-
-    return true;
+    return glCanvas;
 }
 
 /** True if the device supports WebGL (checked lazily on first call) */

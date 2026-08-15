@@ -1,136 +1,134 @@
 import type { AIModelBackend, InferRequest, InferResult } from './types';
 
-// ──────────────────────────────────────────────────────────
-//  Fal.ai Backend — calls the real stable-diffusion img2img API
-//  Authentication is now handled securely via a Vite proxy.
-// ──────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
+//  Fal.ai Backend — FLUX Dev image-to-image
+//
+//  Model: fal-ai/flux/dev/image-to-image
+//  Docs:  https://fal.ai/models/fal-ai/flux/dev/image-to-image
+//
+//  Requests are forwarded through the Vite proxy (/api/fal/...)
+//  which injects the FAL_KEY header server-side.
+// ──────────────────────────────────────────────────────────────────────
+
+const NEGATIVE_PROMPT =
+    "deformed face, different person, duplicate face, extra eyes, extra fingers, " +
+    "bad anatomy, distorted facial features, blurry, low resolution, out of focus, " +
+    "oversaturated, muddy colors, black image, dark overlay, jpeg artifacts, " +
+    "warped face, uncanny face, random objects, clutter, text, watermark, signature, " +
+    "logo, border, frame, multiple people, extra limbs, bad proportions";
+
 export class FalAIBackend implements AIModelBackend {
-    // We target our secure Vite proxy endpoint
-    private static MODEL_URL = "/api/fal/fal-ai/fast-sdxl";
+    // FLUX Dev image-to-image via Vite proxy
+    private static MODEL_PATH = "/api/fal/fal-ai/flux/dev/image-to-image";
     private authFailed = false;
 
     async initialize(): Promise<void> {
-        console.log("FalAIBackend initialized via secure proxy");
-    }
-
-    private _mockFallback: AsyncAIBackend | null = null;
-    private get mockFallback(): AsyncAIBackend {
-        if (!this._mockFallback) this._mockFallback = new AsyncAIBackend();
-        return this._mockFallback;
+        console.log("[AI Filter] FLUX Dev image-to-image backend initialized");
     }
 
     async infer(request: InferRequest): Promise<InferResult> {
-        // If authentication failed permanently, stop spamming the proxy/backend
-        // and just immediately use the local mock fallback.
         if (this.authFailed) {
-            return this.mockFallback.infer(request);
+            console.log("[AI Filter] Auth permanently failed — using local fallback");
+            return { outputCanvas: null, polygon: request.polygon };
         }
 
         const { croppedImage, polygon } = request;
-        const base64 = croppedImage.toDataURL("image/jpeg", 0.85);
 
+        // Validate crop before sending
+        if (croppedImage.width < 8 || croppedImage.height < 8) {
+            return { outputCanvas: null, polygon };
+        }
+
+        // Encode the cropped region as a base64 data URL
+        const imageDataUrl = croppedImage.toDataURL("image/jpeg", 0.90);
+
+        // FLUX Dev image-to-image request body
         const body = {
-            prompt: (request.prompt ?? "") + ", no watermark, no text",
-            negative_prompt: "blurry, low quality, bad anatomy, extra fingers, multiple faces, duplicate, deformed, text, watermark",
-            image_url: base64,
-            strength: 0.65,
-            num_inference_steps: 20,
-            guidance_scale: 7.5,
-            image_size: { width: croppedImage.width, height: croppedImage.height },
+            image_url: imageDataUrl,
+            prompt: (request.prompt ?? "cinematic portrait, high quality, photorealistic") +
+                    ", no watermark, no text, high detail, sharp focus",
+            negative_prompt: NEGATIVE_PROMPT,
+            // Conservative strength — preserves 65-80% of original structure
+            strength: 0.35,
+            num_inference_steps: 28,
+            guidance_scale: 3.5,   // FLUX uses lower CFG than SDXL
+            seed: Math.floor(Math.random() * 9999999),
+            enable_safety_checker: false,
+            // Output at the same resolution as the crop
+            image_size: {
+                width:  Math.max(64, Math.min(1024, croppedImage.width)),
+                height: Math.max(64, Math.min(1024, croppedImage.height)),
+            },
+            // Return a single image
+            num_images: 1,
         };
 
         try {
-            const response = await fetch(FalAIBackend.MODEL_URL, {
+            console.log(`[AI Filter] Request started → FLUX Dev img2img (${body.image_size.width}×${body.image_size.height})`);
+            const response = await fetch(FalAIBackend.MODEL_PATH, {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(body),
             });
 
             if (!response.ok) {
-                const errorText = await response.text();
-                
-                // On 401 or 403, it's a permanent configuration error.
-                // Do not retry. Throw a specific error to break the loop.
+                const errorText = await response.text().catch(() => "(no body)");
+
                 if (response.status === 401 || response.status === 403) {
-                    console.error(`Fal.ai Auth Error ${response.status}: Missing or invalid API key. Set FAL_KEY in .env`);
+                    console.error(
+                        `[AI Filter] Auth error ${response.status}. ` +
+                        "Ensure FAL_KEY is set in .env and dev server was restarted."
+                    );
                     this.authFailed = true;
-                    throw new Error("AUTH_FAILED");
+                    return { outputCanvas: null, polygon };
                 }
-                
-                console.warn(`Fal.ai API error ${response.status}: ${errorText}. Falling back to local filter.`);
-                return this.mockFallback.infer(request);
+
+                console.warn(`[AI Filter] API error ${response.status}: ${errorText} — falling back to local filter`);
+                return { outputCanvas: null, polygon };
             }
 
             const json = await response.json();
-            const outputUrl: string = json.images?.[0]?.url;
+            // FLUX returns: { images: [{ url, content_type }], timings, ... }
+            const outputUrl: string | undefined =
+                json?.images?.[0]?.url ??
+                json?.image?.url ??      // some model variants
+                json?.output;            // legacy
+
             if (!outputUrl) {
-                console.warn("No image returned from Fal.ai. Falling back to local filter.");
-                return this.mockFallback.infer(request);
+                console.warn("[AI Filter] No image URL in response:", JSON.stringify(json).slice(0, 200));
+                return { outputCanvas: null, polygon };
             }
 
-            const outputCanvas = await FalAIBackend.urlToCanvas(outputUrl, croppedImage.width, croppedImage.height);
+            console.log(`[AI Filter] Result received`);
+            const outputCanvas = await FalAIBackend.urlToCanvas(
+                outputUrl,
+                croppedImage.width,
+                croppedImage.height,
+            );
+            console.log(`[AI Filter] Result dimensions: ${outputCanvas.width}×${outputCanvas.height}`);
             return { outputCanvas, polygon };
+
         } catch (e) {
-            if (e instanceof Error && e.message === "AUTH_FAILED") {
-                throw e; // Bubble up to stop the loop
-            }
-            console.warn("Fal.ai inference failed completely. Falling back to local filter.", e);
-            return this.mockFallback.infer(request);
+            console.error("[AI Filter] ERROR:", e);
+            console.log("[AI Filter] Falling back to original camera");
+            return { outputCanvas: null, polygon };
         }
     }
 
-    private static async urlToCanvas(
-        url: string,
-        w: number,
-        h: number
-    ): Promise<HTMLCanvasElement> {
+    private static async urlToCanvas(url: string, w: number, h: number): Promise<HTMLCanvasElement> {
         return new Promise((resolve, reject) => {
             const img = new Image();
             img.crossOrigin = "anonymous";
             img.onload = () => {
                 const canvas = document.createElement("canvas");
-                canvas.width = w;
+                canvas.width  = w;
                 canvas.height = h;
-                const ctx = canvas.getContext("2d")!;
-                ctx.drawImage(img, 0, 0, w, h);
+                canvas.getContext("2d")!.drawImage(img, 0, 0, w, h);
                 resolve(canvas);
             };
-            img.onerror = () => reject(new Error("Failed to load result image"));
+            img.onerror = () => reject(new Error("Failed to load AI result image"));
             img.src = url;
         });
-    }
-
-    dispose(): void {}
-}
-
-// ──────────────────────────────────────────────────────────
-//  Mock backend (used when no API key is set)
-//  Simulates the latency of a real inference call.
-// ──────────────────────────────────────────────────────────
-export class AsyncAIBackend implements AIModelBackend {
-    private isInferring = false;
-
-    async initialize(): Promise<void> {
-        console.log("AsyncAIBackend (mock) initialized");
-    }
-
-    async infer(_request: InferRequest): Promise<InferResult> {
-        if (this.isInferring) throw new Error("Already inferring");
-        this.isInferring = true;
-
-        try {
-            // Simulate ~800ms GPU latency
-            await new Promise(resolve => setTimeout(resolve, 800));
-
-            // We don't want to return a CSS-filtered webcam crop anymore.
-            // Returning a null outputCanvas here will cause the frontend to gracefully fall back 
-            // to the local CSS filters which perfectly fits the user's requirements without spamming the console.
-            return { outputCanvas: null, polygon: _request.polygon };
-        } finally {
-            this.isInferring = false;
-        }
     }
 
     dispose(): void {}

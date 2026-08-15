@@ -24,7 +24,10 @@ import { computeQuad, dist, lerpPt, detectGesture } from "./rendering/fingerFram
 import type { Point } from "./rendering/fingerFrameRenderer";
 import { drawFrameOutline, STYLES, createFrameState } from "./styles/effects";
 import type { StyleId, FrameState } from "./styles/effects";
-import { applyLocalFilter } from "./styles/filters";
+import { getFilteredCanvas } from "./styles/filters";
+import { Compositor } from "./ai/compositor";
+import { createBackend } from "./ai/modelBackend";
+import type { AIModelBackend } from "./ai/types";
 
 // ── MediaPipe asset paths (served from /public/) ─────────────────────
 const WASM_PATH  = "/wasm";
@@ -75,19 +78,6 @@ async function getHandTracker(): Promise<HandLandmarker> {
     return _trackerPromise;
 }
 
-// All filters use live webcam — no static asset preloading needed.
-
-// ── Asset preloader ───────────────────────────────────────────────────────────
-const loadedAssets = new Map<StyleId, HTMLImageElement>();
-function getAsset(style: StyleId): HTMLImageElement | null {
-    if (loadedAssets.has(style)) return loadedAssets.get(style)!;
-
-    const img = new Image();
-    img.src = `/assets/filter_${style}.png`;
-    loadedAssets.set(style, img);
-    return img;
-}
-
 // ── Smoothing / hold constants ────────────────────────────────────────────────
 const MAX_LOST_FRAMES     = 25;
 const JUMP_CONFIRM_FRAMES = 2;
@@ -127,11 +117,11 @@ export function useFingerFrame(): UseFingerFrameReturn {
     // ── React UI state ────────────────────────────────────────────────────────
     const [status,       setStatus]       = useState<Status>("idle");
     const [errorMessage, setErrorMessage] = useState("");
-    const [activeStyle,  setActiveStyleState] = useState<StyleId>("movie3d");
+    const [activeStyle,  setActiveStyleState] = useState<StyleId>("cinematic");
     const [showHint,     setShowHint]     = useState(true);
 
     // ── Mutable refs (hot path — never cause re-renders) ─────────────────────
-    const styleRef         = useRef<StyleId>("movie3d");
+    const styleRef         = useRef<StyleId>("cinematic");
     const stylesRef        = useRef<StyleId[]>(STYLES.map(s => s.id));
     const trackerRef       = useRef<HandLandmarker | null>(null);
     const rafIdRef         = useRef(0);
@@ -147,6 +137,20 @@ export function useFingerFrame(): UseFingerFrameReturn {
     const lostFramesRef    = useRef(0);
     const jumpFramesRef    = useRef(0);
     const lastVideoTimeRef = useRef(-1);
+
+    // ── AI pipeline refs ──────────────────────────────────────────────────────
+    // The latest AI-transformed canvas result, cached and reused every RAF frame
+    const aiResultRef      = useRef<HTMLCanvasElement | null>(null);
+    // The style that produced the cached AI result (to bust cache on style change)
+    const aiResultStyleRef = useRef<StyleId | null>(null);
+    // Whether an AI inference is currently in flight
+    const isInferringRef   = useRef(false);
+    // Whether the AI poll loop should keep running
+    const aiRunningRef     = useRef(false);
+    // AI backend singleton
+    const backendRef       = useRef<AIModelBackend | null>(null);
+    // Compositor: crops polygon region + warps result back
+    const compositorRef    = useRef<Compositor | null>(null);
 
     // Frame outline animation state
     const lastFrameTimeRef = useRef(performance.now());
@@ -367,29 +371,46 @@ export function useFingerFrame(): UseFingerFrameReturn {
             }
         }
 
-        // 4. Draw filter inside the quad polygon
+        // 4. Composite filter result inside the quad polygon
         if (cornersRef.current && presenceRef.current > 0.01) {
             const quad     = cornersRef.current;
             const presence = presenceRef.current;
             const style    = styleRef.current;
 
+            // If the cached AI result belongs to a different style, discard it
+            if (aiResultStyleRef.current !== style) {
+                aiResultRef.current = null;
+                aiResultStyleRef.current = null;
+            }
+
+            const aiCanvas = aiResultRef.current;
+
             ctx.save();
             ctx.globalAlpha = presence;
+            ctx.globalCompositeOperation = "source-over";
 
-            // Clip to polygon
+            // Clip to the exact polygon shape
             ctx.beginPath();
             ctx.moveTo(quad[0].x, quad[0].y);
             for (let i = 1; i < quad.length; i++) ctx.lineTo(quad[i].x, quad[i].y);
             ctx.closePath();
             ctx.clip();
 
-            // Apply per-style visual filter
-            const filterImg = getAsset(style);
-            applyLocalFilter(ctx, video, w, h, quad, style, t, filterImg || null);
+            if (aiCanvas && aiCanvas.width > 0 && aiCanvas.height > 0) {
+                // ✅ AI result available — warp it precisely into the polygon
+                console.debug("[Composite] AI result rendered inside polygon");
+                ctx.restore(); // restore before renderWarped (it does its own save/restore)
+                compositorRef.current?.renderWarped(ctx, aiCanvas, quad, presence);
+            } else {
+                // ✅ Local CPU filter — always produces visible pixels immediately
+                // This is the guaranteed fallback when AI is pending / no API key
+                const filterCanvas = getFilteredCanvas(video, w, h, style, t, null);
+                console.debug(`[Composite] Local filter rendered: ${filterCanvas.width}x${filterCanvas.height}`);
+                ctx.drawImage(filterCanvas, 0, 0, w, h);
+                ctx.restore();
+            }
 
-            ctx.restore();
-
-            // Frame outline drawn on top of clipped filter
+            // Frame outline drawn on top
             const styleDef = STYLES.find((s) => s.id === style)!;
             const now = performance.now();
             const dt  = Math.min(0.1, (now - lastFrameTimeRef.current) / 1000);
@@ -473,9 +494,81 @@ export function useFingerFrame(): UseFingerFrameReturn {
     useEffect(() => {
         let cancelled = false;
 
+        // ── AI poll loop ──────────────────────────────────────────────────────
+        // Runs independently from RAF. Grabs the current polygon crop, sends it
+        // to the AI backend, and stores the result. The RAF loop reads the result.
+        async function pollAIFrames() {
+            const backend = backendRef.current;
+            const compositor = compositorRef.current;
+            if (!backend || !compositor) return;
+
+            while (aiRunningRef.current) {
+                // Only infer when a polygon is visible and we're not already waiting
+                const quad = cornersRef.current;
+                const video = videoRef.current;
+                const style = styleRef.current;
+                const styleDef = STYLES.find(s => s.id === style);
+
+                if (quad && video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !isInferringRef.current && styleDef) {
+                    isInferringRef.current = true;
+                    try {
+                        // Mirror the video to a temporary canvas (webcam is flipped)
+                        const w = video.videoWidth || 640;
+                        const h = video.videoHeight || 480;
+                        const mirrorCanvas = document.createElement("canvas");
+                        mirrorCanvas.width = w;
+                        mirrorCanvas.height = h;
+                        const mCtx = mirrorCanvas.getContext("2d")!;
+                        mCtx.translate(w, 0);
+                        mCtx.scale(-1, 1);
+                        mCtx.drawImage(video, 0, 0, w, h);
+
+                        console.log("[AI Filter] Input frame captured");
+                        const croppedImage = compositor.extractRegion(mirrorCanvas, quad);
+
+                        if (croppedImage.width > 4 && croppedImage.height > 4) {
+                            console.log("[AI Filter] Request started");
+                            const result = await backend.infer({
+                                croppedImage,
+                                prompt: styleDef.description,
+                                polygon: quad,
+                                timestamp: performance.now(),
+                                presence: presenceRef.current,
+                            });
+
+                            // Only store if the style hasn't changed while we were waiting
+                            if (result.outputCanvas && styleRef.current === style) {
+                                console.log(`[AI Filter] Result received. Dimensions: ${result.outputCanvas.width}x${result.outputCanvas.height}`);
+                                console.log("[AI Filter] Cached latest result");
+                                aiResultRef.current = result.outputCanvas;
+                                aiResultStyleRef.current = style;
+                            } else if (!result.outputCanvas) {
+                                console.log("[AI Filter] Falling back to original camera");
+                            }
+                        }
+                    } catch (e) {
+                        console.error("[AI Filter] ERROR", e);
+                        console.log("[AI Filter] Falling back to original camera");
+                    } finally {
+                        isInferringRef.current = false;
+                    }
+                }
+
+                // Small yield before next poll iteration — prevents busy-loop
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        }
+
         async function init() {
             try {
                 setStatus("loading-tracker");
+
+                // Initialize AI backend + compositor
+                const backend = createBackend();
+                await backend.initialize();
+                console.log("[AI Filter] Model initialized");
+                backendRef.current = backend;
+                compositorRef.current = new Compositor();
 
                 // GPU→CPU fallback is handled inside getHandTracker()
                 const tracker = await getHandTracker();
@@ -483,6 +576,10 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 trackerRef.current = tracker;
 
                 await startCamera();
+
+                // Start the async AI frame polling loop
+                aiRunningRef.current = true;
+                pollAIFrames();
             } catch (err) {
                 if (cancelled) return;
                 const msg = err instanceof Error ? err.message : "Initialisation failed.";
@@ -495,6 +592,9 @@ export function useFingerFrame(): UseFingerFrameReturn {
 
         return () => {
             cancelled = true;
+
+            // Stop AI poll loop
+            aiRunningRef.current = false;
 
             // Stop render loop
             cancelAnimationFrame(rafIdRef.current);
@@ -516,6 +616,10 @@ export function useFingerFrame(): UseFingerFrameReturn {
             lostFramesRef.current  = 0;
             jumpFramesRef.current  = 0;
             detectingRef.current   = false;
+
+            // Dispose AI backend
+            backendRef.current?.dispose();
+            backendRef.current = null;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);

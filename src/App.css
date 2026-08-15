@@ -439,31 +439,49 @@ body,
 }
 
 /* ────────────────────────────────────────────
-   Bottom toolbar
+   Bottom toolbar (pill style)
 ──────────────────────────────────────────── */
 
-.toolbar {
+.toolbar-wrap {
     position: fixed;
-    bottom: 14px;
+    bottom: 18px;
     left: 50%;
     transform: translateX(-50%);
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 4px;
-    padding: 8px;
-    height: var(--toolbar-h);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    backdrop-filter: var(--blur);
-    -webkit-backdrop-filter: var(--blur);
-    box-shadow:
-        var(--shadow),
-        0 0 0 1px rgba(168, 85, 247, 0.04),
-        inset 0 1px 0 rgba(6, 182, 212, 0.04);
+    gap: 10px;
     z-index: 20;
+    pointer-events: none;
+}
+
+/* Hint text above the toolbar */
+.toolbar-hint {
+    font-size: 13px;
+    font-family: var(--font);
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.82);
+    text-align: center;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+}
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: var(--radius-pill);
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255,255,255,0.07) inset;
+    pointer-events: all;
     flex-wrap: nowrap;
-    max-width: calc(100vw - 24px);
+    max-width: calc(100vw - 32px);
     overflow-x: auto;
     scrollbar-width: none;
 }
@@ -472,87 +490,49 @@ body,
     display: none;
 }
 
-/* ── Toolbar button ── */
+/* ── Toolbar pill button ── */
 
 .toolbar__btn {
     position: relative;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 3px;
-    padding: 7px 14px;
-    min-width: 70px;
-    border-radius: var(--radius-sm);
+    gap: 5px;
+    padding: 6px 14px;
+    border-radius: var(--radius-pill);
     border: 1px solid transparent;
     background: transparent;
-    color: var(--text-dim);
-    font-family: var(--font-cyber);
+    color: rgba(255, 255, 255, 0.65);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
+    white-space: nowrap;
+    letter-spacing: 0.01em;
     transition:
         background var(--transition),
         color var(--transition),
         border-color var(--transition),
         transform var(--transition),
         box-shadow var(--transition);
-    white-space: nowrap;
-    overflow: hidden;
-    letter-spacing: 0.02em;
-}
-
-/* Hover neon shimmer */
-.toolbar__btn::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(105deg, transparent 40%, rgba(6, 182, 212, 0.07) 50%, transparent 60%);
-    background-size: 200% 100%;
-    background-position: 200% 0;
-    transition: background-position 0.4s ease;
-    border-radius: inherit;
-    pointer-events: none;
-}
-
-.toolbar__btn:hover::before {
-    background-position: -40% 0;
 }
 
 .toolbar__btn:hover {
-    background: rgba(6, 182, 212, 0.06);
-    color: var(--cyan);
-    border-color: rgba(6, 182, 212, 0.14);
+    background: rgba(255, 255, 255, 0.10);
+    color: rgba(255, 255, 255, 0.95);
     transform: translateY(-1px);
-    text-shadow: 0 0 8px var(--neon-glow-c);
 }
 
 .toolbar__btn:active {
-    transform: scale(0.95) translateY(0);
+    transform: scale(0.96);
 }
 
-/* Active — neon glow highlight */
+/* Active pill — white highlight */
 .toolbar__btn--active {
-    background: rgba(6, 182, 212, 0.07);
-    border-color: var(--accent, var(--cyan));
-    color: var(--text);
-    box-shadow:
-        0 0 0 1px rgba(from var(--accent, var(--cyan)) r g b / 0.28) inset,
-        0 4px 20px rgba(0, 0, 0, 0.4),
-        0 0 28px -4px var(--accent, var(--cyan));
-    animation: btn-activate 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-    text-shadow: 0 0 10px rgba(from var(--accent, var(--cyan)) r g b / 0.8);
-}
-
-/* Active sweep shimmer */
-.toolbar__btn--active::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 50%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.1), transparent);
-    animation: btn-sweep 0.5s ease both;
-    pointer-events: none;
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.30);
+    color: #ffffff;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+    animation: btn-activate 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
 @keyframes btn-activate {
@@ -560,48 +540,21 @@ body,
     to   { transform: scale(1); }
 }
 
-@keyframes btn-sweep {
-    from { left: -100%; }
-    to   { left: 160%;  }
-}
-
-/* Keyboard shortcut badge */
+/* Keyboard shortcut number — dimmed prefix */
 .toolbar__btn-key {
-    font-size: 9px;
+    font-size: 12px;
     font-weight: 400;
-    font-family: var(--font-cyber);
-    opacity: 0.32;
+    opacity: 0.50;
     line-height: 1;
-    letter-spacing: 0.1em;
 }
 
 /* Button label */
 .toolbar__btn-label {
-    font-size: 11px;
-    font-weight: 700;
-    font-family: var(--font-cyber);
+    font-size: 13px;
+    font-weight: 600;
     line-height: 1;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
 }
 
-/* Active dot */
-.toolbar__btn-dot {
-    position: absolute;
-    bottom: 5px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 3px;
-    height: 3px;
-    border-radius: 50%;
-    box-shadow: 0 0 8px currentColor, 0 0 18px currentColor;
-    animation: dot-pulse 2s ease-in-out infinite;
-}
-
-@keyframes dot-pulse {
-    0%, 100% { opacity: 0.5; transform: translateX(-50%) scale(1); }
-    50%       { opacity: 1;   transform: translateX(-50%) scale(1.7); }
-}
 
 /* ────────────────────────────────────────────
    Utility animations

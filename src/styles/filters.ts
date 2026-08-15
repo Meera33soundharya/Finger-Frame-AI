@@ -11,10 +11,10 @@
 //  the shader isn't loaded yet, we run the CSS pipeline below.
 // ============================================================
 
-import type { Point } from "../rendering/fingerFrameRenderer";
+import { processCyberpunkFilterCPU } from "../rendering/cyberpunkFilterCPU";
 import type { StyleId } from "./effects";
 import { applyGLFilter } from "./glFilters";
-import { processCyberpunkFilterCPU } from "../rendering/cyberpunkFilterCPU";
+// (Removed duplicate processCyberpunkFilterCPU import)
 import { processAnimeFilterCPU } from "../rendering/animeFilterCPU";
 
 // ── Two persistent offscreen canvases (never destroyed, reused every frame) ──
@@ -94,238 +94,276 @@ declare global { interface Window { __FFDebug?: boolean; } }
 // ═══════════════════════════════════════════════════════════════════════════════
 //  applyLocalFilter — called EVERY FRAME inside the finger-frame polygon
 // ═══════════════════════════════════════════════════════════════════════════════
-export function applyLocalFilter(
-    ctx: CanvasRenderingContext2D,
+export function getFilteredCanvas(
     video: HTMLVideoElement,
     w: number,
     h: number,
-    quad: Point[],
     style: StyleId,
     time: number,
     filterImage: HTMLImageElement | null
-) {
+): HTMLCanvasElement {
     const dbg = typeof window !== "undefined" && window.__FFDebug;
 
-    if (dbg) {
-        const minX = Math.min(...quad.map(p => p.x));
-        const minY = Math.min(...quad.map(p => p.y));
-        const maxX = Math.max(...quad.map(p => p.x));
-        const maxY = Math.max(...quad.map(p => p.y));
-        console.log(`[Polygon] Points: ${quad.map(p => `(${p.x.toFixed(0)},${p.y.toFixed(0)})`).join(' ')}`);
-        console.log(`[Polygon] Width: ${(maxX - minX).toFixed(0)}  Height: ${(maxY - minY).toFixed(0)}`);
-        console.log(`[Filter] Processing polygon — style: ${style}`);
-    }
-
-    // ── DEBUG overlay: show polygon mask in green/white/red ─────────────────────
-    if (dbg) {
-        // GREEN polygon outline
-        ctx.save();
-        ctx.strokeStyle = "lime";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        quad.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-        ctx.closePath();
-        ctx.stroke();
-        // WHITE mask fill (semi-transparent)
-        ctx.fillStyle = "rgba(255,255,255,0.25)";
-        ctx.fill();
-        ctx.restore();
-        if (dbg) console.log(`[Mask] Debug overlay drawn`);
-        return;
-    }
+    const { offA, ctxA, offB, ctxB } = ensureOffscreen(w, h);
+    
+    // We will use offA as the final result canvas for CPU path and static assets.
+    // Ensure it starts clean
+    ctxA.clearRect(0, 0, w, h);
 
     // ── Static asset fast path (pre-rendered filter PNG) ──────────────────────
     if (filterImage && filterImage.complete && filterImage.naturalWidth > 0) {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const p of quad) {
-            minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-            maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
-        }
-        const qW = maxX - minX;
-        const qH = maxY - minY;
-        const imgRatio  = filterImage.naturalWidth / filterImage.naturalHeight;
-        const quadRatio = qW / qH;
-        let drawW = qW, drawH = qH;
-        if (imgRatio > quadRatio) drawW = qH * imgRatio;
-        else                      drawH = qW / imgRatio;
-        const drawX = minX + (qW - drawW) / 2;
-        const drawY = minY + (qH - drawH) / 2;
-        ctx.drawImage(filterImage, drawX, drawY, drawW, drawH);
-        if (dbg) console.log(`[Composite] Static asset rendered inside polygon`);
-        return;
+        // Draw video base
+        drawLive(ctxA, video, w, h, "none");
+        ctxA.drawImage(filterImage, 0, 0, w, h);
+        if (dbg) console.log(`[Composite] Static asset rendered to filter canvas`);
+        return offA;
     }
 
     // ── GPU path: WebGL shader ────────────────────────────────────────────
-    // The GL canvas renders the full-frame filtered image, then blits only the
-    // bounding-box region. The ctx is already clipped to the polygon, so only
-    // polygon pixels get painted. UV X is mirrored in the vertex shader.
-    const gpuDone = applyGLFilter(ctx, video, w, h, quad, style, time);
-    if (gpuDone) {
-        if (dbg) console.log(`[Composite] GL shader rendered inside polygon`);
-        return;
+    const glCanvas = applyGLFilter(video, w, h, style, time);
+    if (glCanvas) {
+        if (dbg) console.log(`[Composite] GL shader rendered to filter canvas`);
+        return glCanvas;
     }
 
     // ── CPU fallback: Canvas2D composite filters ───────────────────────────
-    // These draw the full webcam frame (with CSS filter) onto ctx, which is
-    // already clipped to the polygon. Only polygon pixels are painted.
-    const { offA, ctxA, offB, ctxB } = ensureOffscreen(w, h);
+    // These run every frame as an immediate fallback while the FLUX AI
+    // result is loading asynchronously. Each one is designed to be
+    // visually distinctive and clearly recognizable as the intended style.
+    switch (style as string) {
 
-    switch (style) {
-
-        // ── CINEMATIC: warm + skin smooth ─────────────────────────────────
+        // ── CINEMATIC: Warm film-grade look ───────────────────────────────
         case "cinematic": {
-            drawLive(ctx, video, w, h, "saturate(1.35) contrast(1.12) brightness(1.06)");
-            gradientWash(ctx, w, h, "rgba(255,215,160,0.28)", "rgba(25,15,55,0.28)", "overlay");
-            colorWash(ctx, w, h, "rgba(255,180,180,0.08)", "soft-light");
+            // Base: slightly warm + refined
+            drawLive(ctxA, video, w, h, "saturate(1.3) contrast(1.15) brightness(1.08)");
+            // Warm amber grade — upper half
+            const cgTop = ctxA.createLinearGradient(0, 0, 0, h);
+            cgTop.addColorStop(0,   "rgba(255,210,140,0.22)");
+            cgTop.addColorStop(0.5, "rgba(255,210,140,0.08)");
+            cgTop.addColorStop(1,   "rgba(20,10,60,0.30)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "overlay";
+            ctxA.fillStyle = cgTop;
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
+            // Subtle vignette
+            const vig = ctxA.createRadialGradient(w/2, h/2, h*0.3, w/2, h/2, h*0.9);
+            vig.addColorStop(0, "rgba(0,0,0,0)");
+            vig.addColorStop(1, "rgba(0,0,0,0.45)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "multiply";
+            ctxA.fillStyle = vig;
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
             break;
         }
 
-        // ── EDITORIAL INK: pencil sketch ─────────────────────────────────
+        // ── EDITORIAL INK: High-contrast pencil sketch ────────────────────
         case "editorial-ink": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.15)");
             ctxB.clearRect(0, 0, w, h);
-            drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(5px)");
+            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.2) contrast(1.1)");
+            drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(6px)");
             ctxA.save();
             ctxA.globalCompositeOperation = "color-dodge";
             ctxA.drawImage(offB, 0, 0);
             ctxA.restore();
-            ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(228,218,196,0.58)", "multiply");
+            // Warm paper tint
+            colorWash(ctxA, w, h, "rgba(232,220,195,0.65)", "multiply");
+            // Darken shadows
+            ctxA.save();
+            ctxA.globalCompositeOperation = "multiply";
+            ctxA.fillStyle = "rgba(80,60,40,0.15)";
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
             break;
         }
 
-        // ── WATERCOLOR: Kuwahara-like painted ──────────────────────────────
+        // ── WATERCOLOR: Multi-pass painted effect ─────────────────────────
         case "watercolor": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "saturate(1.7) contrast(1.1) brightness(1.2) blur(4px)");
             ctxB.clearRect(0, 0, w, h);
-            drawLive(ctxB, video, w, h, "saturate(1.4) contrast(1.6) brightness(1.0)");
-            ctx.drawImage(offA, 0, 0);
-            ctx.save();
-            ctx.globalAlpha = 0.30;
-            ctx.drawImage(offB, 0, 0);
-            ctx.restore();
-            colorWash(ctx, w, h, "rgba(240,222,190,0.50)", "multiply");
-            colorWash(ctx, w, h, "rgba(255,195,175,0.18)", "overlay");
+            // Soft blurred base (paint bleeding)
+            drawLive(ctxA, video, w, h, "saturate(1.6) contrast(1.05) brightness(1.15) blur(5px)");
+            // Sharp detail layer
+            drawLive(ctxB, video, w, h, "saturate(1.8) contrast(1.5) brightness(1.0)");
+            // Blend: mostly blurred, small sharp overlay for detail
+            ctxA.save();
+            ctxA.globalAlpha = 0.25;
+            ctxA.globalCompositeOperation = "source-over";
+            ctxA.drawImage(offB, 0, 0);
+            ctxA.restore();
+            // Warm paper / pigment tint
+            colorWash(ctxA, w, h, "rgba(245,225,195,0.55)", "multiply");
+            colorWash(ctxA, w, h, "rgba(200,170,220,0.15)", "overlay");
+            colorWash(ctxA, w, h, "rgba(255,200,160,0.12)", "screen");
             break;
         }
 
-        // ── FILM NOIR: desaturated + high contrast + vignette ────────────────
+        // ── FILM NOIR: High-contrast monochrome ───────────────────────────
         case "film-noir": {
-            drawLive(ctx, video, w, h, "grayscale(100%) contrast(1.55) brightness(0.92)");
-            colorWash(ctx, w, h, "rgba(0,0,0,0.18)", "multiply");
+            drawLive(ctxA, video, w, h, "grayscale(100%) contrast(1.7) brightness(0.88)");
+            // Deep shadow vignette
+            const nvg = ctxA.createRadialGradient(w/2, h/2, h*0.2, w/2, h/2, h*0.85);
+            nvg.addColorStop(0, "rgba(0,0,0,0)");
+            nvg.addColorStop(1, "rgba(0,0,0,0.60)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "multiply";
+            ctxA.fillStyle = nvg;
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
             break;
         }
 
-        // ── GRAPHITE: pencil drawing ──────────────────────────────────────
+        // ── GRAPHITE: Pencil drawing ──────────────────────────────────────
         case "graphite": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.15)");
             ctxB.clearRect(0, 0, w, h);
-            drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(5px)");
+            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.2)");
+            drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(6px)");
             ctxA.save();
             ctxA.globalCompositeOperation = "color-dodge";
             ctxA.drawImage(offB, 0, 0);
             ctxA.restore();
-            ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(200,200,210,0.45)", "multiply");
+            // Cool-grey paper tint
+            colorWash(ctxA, w, h, "rgba(210,212,218,0.55)", "multiply");
             break;
         }
 
-        // ── SOFT 3D: vibrant Pixar-like ─────────────────────────────────────
+        // ── SOFT 3D / 3D Movie: Vivid animated film look ──────────────────
         case "soft-3d": {
-            drawLive(ctx, video, w, h, "saturate(2.5) contrast(1.35) brightness(1.12)");
-            colorWash(ctx, w, h, "rgba(150,80,255,0.18)", "overlay");
-            colorWash(ctx, w, h, "rgba(255,220,80,0.10)", "screen");
+            // Highly saturated + slightly blown out (cartoon render look)
+            drawLive(ctxA, video, w, h, "saturate(2.8) contrast(1.25) brightness(1.18)");
+            // Soft warm highlight glow
+            const glow = ctxA.createRadialGradient(w*0.5, h*0.35, 0, w*0.5, h*0.35, w*0.65);
+            glow.addColorStop(0,   "rgba(255,240,200,0.30)");
+            glow.addColorStop(0.6, "rgba(255,240,200,0.05)");
+            glow.addColorStop(1,   "rgba(0,0,0,0)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "screen";
+            ctxA.fillStyle = glow;
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
+            // Purple-blue rim light
+            colorWash(ctxA, w, h, "rgba(130,70,255,0.14)", "overlay");
+            colorWash(ctxA, w, h, "rgba(255,220,80,0.08)", "screen");
             break;
         }
 
-        // ── CYBER EDITORIAL: neon cyberpunk ────────────────────────────────
+        // ── CYBERPUNK: Neon cyan + magenta split ──────────────────────────
         case "cyber-editorial": {
-            processCyberpunkFilterCPU(video, ctx, w, h, time, false);
+            // Dark + high contrast base
+            drawLive(ctxA, video, w, h, "saturate(1.2) contrast(1.4) brightness(0.82)");
+            // Cyan left rim light
+            const cyanRim = ctxA.createLinearGradient(0, 0, w * 0.4, 0);
+            cyanRim.addColorStop(0, "rgba(0,255,230,0.35)");
+            cyanRim.addColorStop(1, "rgba(0,255,230,0)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "screen";
+            ctxA.fillStyle = cyanRim;
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
+            // Magenta right rim light
+            const magRim = ctxA.createLinearGradient(w, 0, w * 0.6, 0);
+            magRim.addColorStop(0, "rgba(255,0,180,0.30)");
+            magRim.addColorStop(1, "rgba(255,0,180,0)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "screen";
+            ctxA.fillStyle = magRim;
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
+            // Atmospheric blue-dark overlay
+            colorWash(ctxA, w, h, "rgba(0,20,60,0.28)", "multiply");
             break;
         }
 
-        // ── VINTAGE FILM: warm amber oil ──────────────────────────────────
+        // ── VINTAGE FILM: Warm amber ──────────────────────────────────────
         case "vintage-film": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "saturate(2.0) contrast(1.4) brightness(1.05) blur(1.5px)");
-            ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(200,130,60,0.22)", "overlay");
-            colorWash(ctx, w, h, "rgba(255,210,130,0.10)", "screen");
+            drawLive(ctxA, video, w, h, "saturate(1.9) contrast(1.35) brightness(1.05) blur(0.8px)");
+            colorWash(ctxA, w, h, "rgba(210,140,50,0.25)", "overlay");
+            colorWash(ctxA, w, h, "rgba(255,220,130,0.10)", "screen");
+            // Faded corners
+            const vvg = ctxA.createRadialGradient(w/2, h/2, h*0.3, w/2, h/2, h*0.9);
+            vvg.addColorStop(0, "rgba(0,0,0,0)");
+            vvg.addColorStop(1, "rgba(40,20,0,0.50)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "multiply";
+            ctxA.fillStyle = vvg;
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
             break;
         }
 
-        // ── Legacy IDs (kept for backward compat) ────────────────────────────
-        case "movie3d": {
-            drawLive(ctx, video, w, h, "saturate(2.2) contrast(1.3) brightness(1.1)");
-            colorWash(ctx, w, h, "rgba(255,170,50,0.22)", "overlay");
-            colorWash(ctx, w, h, "rgba(255,200,100,0.08)", "screen");
-            break;
-        }
+        // ── ANIME: Vivid cel-shade look ───────────────────────────────────
         case "anime": {
-            processAnimeFilterCPU(video, ctx, w, h, time);
+            // High contrast + flat colours
+            drawLive(ctxA, video, w, h, "saturate(2.5) contrast(1.55) brightness(1.10)");
+            // Warm pastel skin wash
+            colorWash(ctxA, w, h, "rgba(255,210,180,0.18)", "overlay");
+            // Slight blue sky top
+            const animeTint = ctxA.createLinearGradient(0, 0, 0, h * 0.4);
+            animeTint.addColorStop(0, "rgba(140,200,255,0.15)");
+            animeTint.addColorStop(1, "rgba(140,200,255,0)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "screen";
+            ctxA.fillStyle = animeTint;
+            ctxA.fillRect(0, 0, w * 2, h * 0.4);
+            ctxA.restore();
             break;
         }
-        case "cyberpunk": {
-            processCyberpunkFilterCPU(video, ctx, w, h, time, false);
-            break;
-        }
+
+        // ── Legacy + fallback IDs ─────────────────────────────────────────
+        case "cyberpunk":
         case "cyberpunk-girl": {
-            processCyberpunkFilterCPU(video, ctx, w, h, time, true);
+            processCyberpunkFilterCPU(video, ctxA, w, h, time, style === "cyberpunk-girl");
             break;
         }
         case "sketch": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.15)");
             ctxB.clearRect(0, 0, w, h);
+            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.2)");
             drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(5px)");
             ctxA.save();
             ctxA.globalCompositeOperation = "color-dodge";
             ctxA.drawImage(offB, 0, 0);
             ctxA.restore();
-            ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(228,218,196,0.58)", "multiply");
+            colorWash(ctxA, w, h, "rgba(232,222,200,0.60)", "multiply");
             break;
         }
         case "oil-painting": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "saturate(2.0) contrast(1.4) brightness(1.05) blur(1.5px)");
-            ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(200,130,60,0.22)", "overlay");
+            drawLive(ctxA, video, w, h, "saturate(2.2) contrast(1.45) brightness(1.05) blur(2px)");
+            colorWash(ctxA, w, h, "rgba(190,120,50,0.25)", "overlay");
             break;
         }
         case "hand-drawn-anime": {
-            ctxA.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "grayscale(0.7) contrast(1.15) brightness(1.05) blur(1px)");
-            ctx.drawImage(offA, 0, 0);
-            colorWash(ctx, w, h, "rgba(245, 235, 220, 0.45)", "multiply");
-            colorWash(ctx, w, h, "rgba(20, 15, 10, 0.08)", "overlay");
+            drawLive(ctxA, video, w, h, "saturate(2.0) contrast(1.4) brightness(1.08)");
+            colorWash(ctxA, w, h, "rgba(255,215,180,0.20)", "overlay");
+            colorWash(ctxA, w, h, "rgba(245,235,220,0.35)", "multiply");
             break;
         }
-
-        // ── PIXAR ────────────────────────────────────────────────────────────
+        case "movie3d":
         case "pixar": {
-            drawLive(ctx, video, w, h, "saturate(2.5) contrast(1.35) brightness(1.12)");
-            colorWash(ctx, w, h, "rgba(150, 80, 255, 0.18)", "overlay");
-            colorWash(ctx, w, h, "rgba(255, 220, 80, 0.10)", "screen");
+            drawLive(ctxA, video, w, h, "saturate(2.8) contrast(1.25) brightness(1.18)");
+            colorWash(ctxA, w, h, "rgba(130,70,255,0.14)", "overlay");
+            colorWash(ctxA, w, h, "rgba(255,220,80,0.08)", "screen");
             break;
         }
-
-        // ── PORTRAIT ─────────────────────────────────────────────────────────
         case "portrait": {
-            drawLive(ctx, video, w, h, "saturate(1.35) contrast(1.12) brightness(1.06)");
-            gradientWash(ctx, w, h, "rgba(255, 215, 160, 0.28)", "rgba(25, 15, 55, 0.28)", "overlay");
-            colorWash(ctx, w, h, "rgba(255, 180, 180, 0.08)", "soft-light");
+            drawLive(ctxA, video, w, h, "saturate(1.35) contrast(1.12) brightness(1.08)");
+            const pgTop = ctxA.createLinearGradient(0, 0, 0, h);
+            pgTop.addColorStop(0,   "rgba(255,210,140,0.20)");
+            pgTop.addColorStop(0.5, "rgba(255,210,140,0.06)");
+            pgTop.addColorStop(1,   "rgba(20,10,60,0.28)");
+            ctxA.save();
+            ctxA.globalCompositeOperation = "overlay";
+            ctxA.fillStyle = pgTop;
+            ctxA.fillRect(0, 0, w, h);
+            ctxA.restore();
             break;
         }
-
-        // ── DEFAULT FALLBACK ─────────────────────────────────────────────────
         default: {
-            drawLive(ctx, video, w, h, "saturate(1.8) contrast(1.3) brightness(1.05)");
-            colorWash(ctx, w, h, "rgba(200, 140, 80, 0.2)", "overlay");
+            // Safe fallback — always visually distinct from plain webcam
+            drawLive(ctxA, video, w, h, "saturate(1.9) contrast(1.28) brightness(1.05)");
+            colorWash(ctxA, w, h, "rgba(200,140,80,0.20)", "overlay");
             break;
         }
     }
+
+    return offA;
 }
