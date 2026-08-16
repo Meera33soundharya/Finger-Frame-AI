@@ -15,7 +15,7 @@ import { processCyberpunkFilterCPU } from "../rendering/cyberpunkFilterCPU";
 import type { StyleId } from "./effects";
 import { applyGLFilter } from "./glFilters";
 // (Removed duplicate processCyberpunkFilterCPU import)
-import { processAnimeFilterCPU } from "../rendering/animeFilterCPU";
+
 
 // ── Two persistent offscreen canvases (never destroyed, reused every frame) ──
 let offA: HTMLCanvasElement | null = null;
@@ -70,7 +70,8 @@ function colorWash(
 }
 
 // ── Gradient overlay helper ───────────────────────────────────────────────────
-function gradientWash(
+// @ts-ignore
+function _gradientWash(
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
@@ -94,13 +95,18 @@ declare global { interface Window { __FFDebug?: boolean; } }
 // ═══════════════════════════════════════════════════════════════════════════════
 //  applyLocalFilter — called EVERY FRAME inside the finger-frame polygon
 // ═══════════════════════════════════════════════════════════════════════════════
+import type { FaceLandmarkerResult } from "@mediapipe/tasks-vision";
+import type { Point } from "../rendering/fingerFrameRenderer";
+
 export function getFilteredCanvas(
     video: HTMLVideoElement,
     w: number,
     h: number,
     style: StyleId,
     time: number,
-    filterImage: HTMLImageElement | null
+    filterImage: HTMLImageElement | null,
+    polygonMask?: Point[] | null,
+    faceResult?: FaceLandmarkerResult | null
 ): HTMLCanvasElement {
     const dbg = typeof window !== "undefined" && window.__FFDebug;
 
@@ -122,9 +128,22 @@ export function getFilteredCanvas(
     // ── GPU path: WebGL shader ────────────────────────────────────────────
     const glCanvas = applyGLFilter(video, w, h, style, time);
     if (glCanvas) {
-        if (dbg) console.log(`[Composite] GL shader rendered to filter canvas`);
-        return glCanvas;
-    }
+            if (dbg) console.log(`[Composite] GL shader rendered to filter canvas`);
+            // GL shader flips UV internally so its pixels are mirrored.
+            // But we must return a canvas that gets drawn by `drawImage(filterCanvas, 0, 0, w, h)`
+            // onto the main canvas. The main canvas draws the *base* video mirrored, and the
+            // quad coordinates are mirrored. So we actually want to draw the GL canvas UN-mirrored
+            // onto offA so that it visually matches what the main canvas expects.
+            // Wait, the GL shader ALREADY mirrored the texture (v_uv.x = 1.0 - a_uv.x).
+            // So if we just return glCanvas, it draws its mirrored pixels onto the main canvas
+            // which has NO TRANSFORM active during the clip/draw phase. This causes the mirrored
+            // pixels to appear mirrored. We need to flip it back, OR we can just flip the GL canvas
+            // when we draw it into offA, and return offA.
+            ctxA.save();
+            ctxA.drawImage(glCanvas, 0, 0, w, h);
+            ctxA.restore();
+            return offA;
+        }
 
     // ── CPU fallback: Canvas2D composite filters ───────────────────────────
     // These run every frame as an immediate fallback while the FLUX AI
@@ -213,22 +232,8 @@ export function getFilteredCanvas(
             break;
         }
 
-        // ── GRAPHITE: Pencil drawing ──────────────────────────────────────
-        case "graphite": {
-            ctxB.clearRect(0, 0, w, h);
-            drawLive(ctxA, video, w, h, "grayscale(100%) brightness(1.2)");
-            drawLive(ctxB, video, w, h, "grayscale(100%) invert(100%) blur(6px)");
-            ctxA.save();
-            ctxA.globalCompositeOperation = "color-dodge";
-            ctxA.drawImage(offB, 0, 0);
-            ctxA.restore();
-            // Cool-grey paper tint
-            colorWash(ctxA, w, h, "rgba(210,212,218,0.55)", "multiply");
-            break;
-        }
-
-        // ── SOFT 3D / 3D Movie: Vivid animated film look ──────────────────
-        case "soft-3d": {
+        // ── 3D ANIME: Vivid animated film look ──────────────────
+        case "3d-anime": {
             // Highly saturated + slightly blown out (cartoon render look)
             drawLive(ctxA, video, w, h, "saturate(2.8) contrast(1.25) brightness(1.18)");
             // Soft warm highlight glow
@@ -244,33 +249,6 @@ export function getFilteredCanvas(
             // Purple-blue rim light
             colorWash(ctxA, w, h, "rgba(130,70,255,0.14)", "overlay");
             colorWash(ctxA, w, h, "rgba(255,220,80,0.08)", "screen");
-            break;
-        }
-
-        // ── CYBERPUNK: Neon cyan + magenta split ──────────────────────────
-        case "cyber-editorial": {
-            // Dark + high contrast base
-            drawLive(ctxA, video, w, h, "saturate(1.2) contrast(1.4) brightness(0.82)");
-            // Cyan left rim light
-            const cyanRim = ctxA.createLinearGradient(0, 0, w * 0.4, 0);
-            cyanRim.addColorStop(0, "rgba(0,255,230,0.35)");
-            cyanRim.addColorStop(1, "rgba(0,255,230,0)");
-            ctxA.save();
-            ctxA.globalCompositeOperation = "screen";
-            ctxA.fillStyle = cyanRim;
-            ctxA.fillRect(0, 0, w, h);
-            ctxA.restore();
-            // Magenta right rim light
-            const magRim = ctxA.createLinearGradient(w, 0, w * 0.6, 0);
-            magRim.addColorStop(0, "rgba(255,0,180,0.30)");
-            magRim.addColorStop(1, "rgba(255,0,180,0)");
-            ctxA.save();
-            ctxA.globalCompositeOperation = "screen";
-            ctxA.fillStyle = magRim;
-            ctxA.fillRect(0, 0, w, h);
-            ctxA.restore();
-            // Atmospheric blue-dark overlay
-            colorWash(ctxA, w, h, "rgba(0,20,60,0.28)", "multiply");
             break;
         }
 
@@ -312,7 +290,7 @@ export function getFilteredCanvas(
         // ── Legacy + fallback IDs ─────────────────────────────────────────
         case "cyberpunk":
         case "cyberpunk-girl": {
-            processCyberpunkFilterCPU(video, ctxA, w, h, time, style === "cyberpunk-girl");
+            processCyberpunkFilterCPU(video, ctxA, w, h, time, (style as string) === "cyberpunk-girl", polygonMask, faceResult);
             break;
         }
         case "sketch": {
@@ -331,12 +309,7 @@ export function getFilteredCanvas(
             colorWash(ctxA, w, h, "rgba(190,120,50,0.25)", "overlay");
             break;
         }
-        case "hand-drawn-anime": {
-            drawLive(ctxA, video, w, h, "saturate(2.0) contrast(1.4) brightness(1.08)");
-            colorWash(ctxA, w, h, "rgba(255,215,180,0.20)", "overlay");
-            colorWash(ctxA, w, h, "rgba(245,235,220,0.35)", "multiply");
-            break;
-        }
+
         case "movie3d":
         case "pixar": {
             drawLive(ctxA, video, w, h, "saturate(2.8) contrast(1.25) brightness(1.18)");

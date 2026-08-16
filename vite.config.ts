@@ -21,8 +21,8 @@ export default defineConfig(({ mode }) => {
                     changeOrigin: true,
                     secure: true,
                     rewrite: (path: string) => path.replace(/^\/api\/fal/, ""),
-                    configure: (proxy: import("http-proxy").Server) => {
-                        proxy.on("proxyReq", (proxyReq: import("http").ClientRequest) => {
+                    configure: (proxy: any) => {
+                        proxy.on("proxyReq", (proxyReq: any) => {
                             if (FAL_KEY) {
                                 proxyReq.setHeader("Authorization", `Key ${FAL_KEY}`);
                             }

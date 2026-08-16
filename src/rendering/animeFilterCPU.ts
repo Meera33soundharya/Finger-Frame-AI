@@ -89,7 +89,7 @@ export function processAnimeFilterCPU(
     targetCtx: CanvasRenderingContext2D,
     width: number,
     height: number,
-    time: number
+    _time: number
 ) {
     const { offCtx, srcCtx } = getOffscreen(width, height);
     const w = width, h = height;

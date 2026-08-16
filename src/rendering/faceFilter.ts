@@ -1,5 +1,5 @@
 import type { FaceLandmarkerResult, NormalizedLandmark } from "@mediapipe/tasks-vision";
-import type { StyleId } from "./effects";
+import type { StyleId } from "../styles/effects";
 import { warpFace, type FaceWarpResult } from "./faceWarper";
 
 // ------------------------------------------------------------
@@ -78,7 +78,7 @@ export function applyFaceFilter(
     let skinWashOp = "source-over" as GlobalCompositeOperation;
     let skinWashAlpha = 0;
     
-    switch (style) {
+    switch (style as string) {
         case "movie3d":
         case "pixar":
             filterString = "saturate(1.55) contrast(1.18) brightness(1.08) sepia(0.06)";
@@ -128,7 +128,7 @@ export function applyFaceFilter(
     }
     
     // Enhance Eyes (Brighter, larger appearance)
-    if (style === "movie3d" || style === "pixar" || style === "anime") {
+    if ((style as string) === "movie3d" || (style as string) === "pixar" || (style as string) === "anime") {
         offCtx.save();
         offCtx.beginPath();
         drawRegionPath(offCtx, landmarks, LEFT_EYE, w, h);
@@ -144,7 +144,7 @@ export function applyFaceFilter(
     }
     
     // Add Rosy Cheeks for 3D Movie/Pixar
-    if (style === "movie3d" || style === "pixar") {
+    if ((style as string) === "movie3d" || (style as string) === "pixar") {
         const leftCheek = landmarks[117]; // Left cheek
         const rightCheek = landmarks[346]; // Right cheek
         
@@ -164,20 +164,20 @@ export function applyFaceFilter(
     }
 
     // Enhance Lips (Warmer, fuller)
-    if (style === "movie3d" || style === "anime" || style === "portrait" || style === "pixar") {
+    if ((style as string) === "movie3d" || (style as string) === "anime" || (style as string) === "portrait" || (style as string) === "pixar") {
         offCtx.save();
         offCtx.beginPath();
         drawRegionPath(offCtx, landmarks, LIPS_OUTER, w, h);
         offCtx.clip();
         
         offCtx.globalCompositeOperation = "overlay";
-        offCtx.fillStyle = style === "anime" ? "rgba(255, 100, 150, 0.5)" : "rgba(255, 120, 120, 0.4)";
+        offCtx.fillStyle = (style as string) === "anime" ? "rgba(255, 100, 150, 0.5)" : "rgba(255, 120, 120, 0.4)";
         offCtx.fillRect(0, 0, w, h);
         offCtx.restore();
     }
     
     // Add 3D Shading/Highlight (Nose tip)
-    if (style === "movie3d" || style === "pixar") {
+    if ((style as string) === "movie3d" || (style as string) === "pixar") {
          const noseTip = landmarks[4];
          const nx = (1 - noseTip.x) * w;
          const ny = noseTip.y * h;

@@ -22,7 +22,7 @@ let initPromise:    Promise<FaceLandmarker> | null = null;
 /** Try delegate, throw on failure so caller can retry with CPU. */
 async function buildTracker(
     vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>,
-    delegate: "CPU" 
+    delegate: "GPU" | "CPU"
 ): Promise<FaceLandmarker> {
     return FaceLandmarker.createFromOptions(vision, {
         baseOptions: {

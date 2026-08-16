@@ -107,47 +107,36 @@ function kuwaharaApprox(src: Uint8ClampedArray, w: number, h: number): Uint8Clam
     return dst;
 }
 
-// ── 7-band anime cel shading with skin awareness ─────────────────────────────
-function celShade(L: number, origR: number, origG: number, origB: number): [number, number, number] {
-    const sw = skinWeight(origR, origG, origB);
+// ── 4-band anime cel shading with skin awareness and depth falloff ────────────
+function celShade(L: number, origR: number, origG: number, origB: number, isBg: number): [number, number, number] {
 
-    // Contrast crunch → flat anime zones
-    const Lc = Math.min(1, Math.max(0, (L / 255 - 0.42) * 1.55 + 0.42));
-    const band = Math.floor(Lc * 7) / 7;
 
-    // Cyberpunk palette bands (shadow → skin → rim → specular)
+    // 4 discrete bands for posterized shading
+    const Lc = Math.min(1, Math.max(0, (L / 255 - 0.15) * 1.4));
+    const band = Math.floor(Lc * 4) / 4;
+
+    // Hand-drawn anime palette (warm beige/cream/sepia)
     const bands: [number, number, number][] = [
-        [  3,   5,  20],   // 0: deep black shadow
-        [ 13,  20,  56],   // 1: dark blue-indigo
-        [ 31,  46, 102],   // 2: mid indigo
-        [191, 158, 133],   // 3: anime warm skin
-        [230, 199, 173],   // 4: skin highlight
-        [199, 230, 250],   // 5: cool rim highlight
-        [242, 250, 255],   // 6: bright specular
+        [ 90,  65,  55],   // 0: shadow / dark hair
+        [ 165, 125, 105],  // 1: mid shadow
+        [ 225, 195, 165],  // 2: base skin / cream
+        [ 245, 235, 220],  // 3: highlight
     ];
 
-    const idx = Math.min(6, Math.floor(band * 7));
+    const idx = Math.min(3, Math.floor(band * 4));
     let [r, g, b] = bands[idx];
 
-    // Blend warm skin into skin-detected areas
-    if (sw > 0.1) {
-        const skinIdx = Math.min(4, Math.max(3, idx));
-        const [sr, sg, sb] = bands[skinIdx];
-        const t = sw * 0.7;
-        r = r * (1 - t) + sr * t;
-        g = g * (1 - t) + sg * t;
-        b = b * (1 - t) + sb * t;
-    }
+    // Minimal gradient blending at jaw/neck (mix with original a little bit)
+    const origBlend = 0.25 * (1 - isBg); 
+    const tintedOrigR = (origR * 0.5 + L * 0.5) * 1.1;
+    const tintedOrigG = (origG * 0.5 + L * 0.5) * 0.95;
+    const tintedOrigB = (origB * 0.5 + L * 0.5) * 0.85;
 
-    // Hue identity blend (20%) — preserves face/hair shape
-    const hueR = origR * (sw > 0.1 ? 1.20 : 0.55);
-    const hueG = origG * (sw > 0.1 ? 0.95 : 1.15);
-    const hueB = origB * (sw > 0.1 ? 0.85 : 1.60);
-    r = Math.round(r * 0.80 + clamp(hueR) * 0.20);
-    g = Math.round(g * 0.80 + clamp(hueG) * 0.20);
-    b = Math.round(b * 0.80 + clamp(hueB) * 0.20);
+    r = Math.round(r * (1 - origBlend) + tintedOrigR * origBlend);
+    g = Math.round(g * (1 - origBlend) + tintedOrigG * origBlend);
+    b = Math.round(b * (1 - origBlend) + tintedOrigB * origBlend);
 
-    return [r, g, b];
+    return [clamp(r), clamp(g), clamp(b)];
 }
 
 // ── Dual-scale Sobel (returns 0..1) ──────────────────────────────────────────
@@ -172,21 +161,45 @@ function hash(x: number, y: number): number {
     return s - Math.floor(s);
 }
 
+
+const LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+const RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398];
+const LIPS_OUTER = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146];
+
+function drawRegionPath(ctx: CanvasRenderingContext2D, landmarks: NormalizedLandmark[], indices: number[], w: number, h: number) {
+    ctx.beginPath();
+    for (let i = 0; i < indices.length; i++) {
+        const lm = landmarks[indices[i]];
+        // X is mirrored because the underlying image data is mirrored
+        const x = (1 - lm.x) * w;
+        const y = lm.y * h;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+}
+
+import type { FaceLandmarkerResult, NormalizedLandmark } from "@mediapipe/tasks-vision";
+import type { Point } from "./fingerFrameRenderer";
+
 /**
- * Apply the Cyberpunk Anime CPU filter.
+ * Apply the Hand-Drawn Anime CPU filter (repurposed from Cyberpunk).
  * Reads from video, writes to targetCtx.
+ * If polygonMask is provided, only processes the bounding box of that mask.
  */
 export function processCyberpunkFilterCPU(
     sourceVideo: HTMLVideoElement | HTMLCanvasElement,
     targetCtx: CanvasRenderingContext2D,
     width: number,
     height: number,
-    time: number,
-    _isGirl: boolean = false   // kept for API compat; palette is always cyberpunk
+    _time: number,
+    _isGirl: boolean = false,
+    polygonMask?: Point[] | null,
+    faceResult?: FaceLandmarkerResult | null
 ) {
     const { offCtx, srcCtx } = getOffscreen(width, height);
     const w = width, h = height;
-    const t = time;
+
 
     // ── 1. Draw mirrored video to source canvas ───────────────────────────────
     srcCtx.save();
@@ -198,95 +211,150 @@ export function processCyberpunkFilterCPU(
     const rawData  = srcCtx.getImageData(0, 0, w, h);
     const src      = rawData.data;
 
-    // ── 2. Kuwahara painted surface ──────────────────────────────────────────
-    const painted  = kuwaharaApprox(src, w, h);
+    // ── 2. Initialize offscreen canvas with video so out-of-bbox pixels are visible
+    //    This prevents the transparent-black border when putImageData only covers the bbox
+    offCtx.save();
+    offCtx.translate(w, 0);
+    offCtx.scale(-1, 1);
+    offCtx.drawImage(sourceVideo, 0, 0, w, h);
+    offCtx.restore();
 
-    // ── 3. Per-pixel transformation ──────────────────────────────────────────
-    const out      = new Uint8ClampedArray(src.length);
+    // ── 3. Compute bounding box for efficient processing ─────────────────────────
+    let minX = 0, minY = 0, maxX = w - 1, maxY = h - 1;
+    if (polygonMask && polygonMask.length > 0) {
+        minX = w; minY = h; maxX = 0; maxY = 0;
+        for (const p of polygonMask) {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+        }
+        // Expand bounding box slightly to avoid edge artifacts
+        minX = Math.max(0, Math.floor(minX) - 10);
+        minY = Math.max(0, Math.floor(minY) - 10);
+        maxX = Math.min(w - 1, Math.ceil(maxX) + 10);
+        maxY = Math.min(h - 1, Math.ceil(maxY) + 10);
+    }
 
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const i   = (y * w + x) * 4;
-            const pR  = painted[i], pG = painted[i + 1], pB = painted[i + 2];
-            const oR  = src[i],    oG = src[i + 1],      oB = src[i + 2];
+    // ── 4. Kuwahara painted surface ─────────────────────────────────────────
+    const painted = kuwaharaApprox(src, w, h);
 
-            // Luminance of painted surface
-            const L   = luma(pR, pG, pB);
+    // ── 5. Per-pixel transformation ─────────────────────────────────────────
+    // Use a sub-rect ImageData spanning only [minX..maxX, minY..maxY]
+    const bboxW = maxX - minX + 1;
+    const bboxH = maxY - minY + 1;
+    const out = new Uint8ClampedArray(bboxW * bboxH * 4);
 
-            // ── 4. 7-band cel shading ─────────────────────────────────────────
-            let [r, g, b] = celShade(L, oR, oG, oB);
+    for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+            const si = (y * w + x) * 4;
+            const oi = ((y - minY) * bboxW + (x - minX)) * 4;
+            const pR = painted[si], pG = painted[si + 1], pB = painted[si + 2];
+            const oR = src[si],    oG = src[si + 1],      oB = src[si + 2];
+            const L = luma(pR, pG, pB);
 
-            // ── 5. Dual-scale Sobel ink lines ─────────────────────────────────
-            const e1 = Math.min(1, Math.max(0, (sobelAt(src, w, h, x, y, 1.8) - 0.04) / 0.18));
-            const e2 = Math.min(1, Math.max(0, (sobelAt(src, w, h, x, y, 3.5) - 0.06) / 0.19)) * 0.55;
-            const edge = Math.min(1, e1 + e2);
+            // Depth/Focus heuristic: distance from center of bounding box
+            const cx = (minX + maxX) / 2;
+            const cy = (minY + maxY) / 2;
+            const dist = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / Math.max(bboxW, bboxH);
+            const isBg = Math.max(0, Math.min(1, (dist - 0.25) / 0.35));
 
-            if (edge > 0.01) {
-                const inkR = 5, inkG = 3, inkB = 26; // dark blue-purple ink
+            // ── 4. 4-band cel shading ─────────────────────────────────────────
+            let [r, g, b] = celShade(L, oR, oG, oB, isBg);
+
+            // ── 5. Watercolor blotches in shadow areas ────────────────────────
+            const cHash = hash(Math.floor(x/15), Math.floor(y/15));
+            const shadowMask = Math.max(0, 1 - L/150); 
+            const blotch = shadowMask * (cHash - 0.5) * 25; // subtle organic variation
+            r = clamp(r + blotch);
+            g = clamp(g + blotch);
+            b = clamp(b + blotch);
+
+            // ── 6. Dry-brush white highlight streaks in hair ──────────────────
+            // Approximate hair by looking for non-skin dark/mid regions that are highly illuminated in original
+            const origL = luma(oR, oG, oB);
+            const sw = skinWeight(oR, oG, oB);
+            const hairMask = (1 - sw) * Math.max(0, (origL - 150) / 100); 
+            const streakHash = hash(Math.floor(x/2), Math.floor(y/20)); // stretched noise
+            if (hairMask > 0.4 && streakHash > 0.6) {
+                const highlight = (streakHash - 0.6) * 100;
+                r = clamp(r + highlight);
+                g = clamp(g + highlight);
+                b = clamp(b + highlight);
+            }
+
+            // ── 7. Vintage paper grain ────────────────────────────────────────
+            const grain = (hash(x, y) - 0.5) * 16;
+            r = clamp(r + grain);
+            g = clamp(g + grain);
+            b = clamp(b + grain);
+
+            // ── 8. Background simplification ──────────────────────────────────
+            if (isBg > 0.1) {
+                const bgR = 245, bgG = 238, bgB = 228; // flat cream paper
+                const blend = Math.min(1, isBg);
+                r = Math.round(r * (1 - blend) + bgR * blend);
+                g = Math.round(g * (1 - blend) + bgG * blend);
+                b = Math.round(b * (1 - blend) + bgB * blend);
+            }
+
+            // ── 9. Sobel ink lines ────────────────────────────────────────────
+            const inkStrength = 1 - (isBg * 0.6); // fade lines slightly in background
+            const e1 = Math.min(1, Math.max(0, (sobelAt(src, w, h, x, y, 1.5) - 0.03) / 0.15));
+            const edge = Math.min(1, e1 * 1.5) * inkStrength;
+
+            if (edge > 0.02) {
+                const inkR = 20, inkG = 15, inkB = 12; // warm dark ink
                 r = Math.round(r * (1 - edge) + inkR * edge);
                 g = Math.round(g * (1 - edge) + inkG * edge);
                 b = Math.round(b * (1 - edge) + inkB * edge);
             }
 
-            // ── 6. Neon rim glow on bright pixels ────────────────────────────
-            const origL = L / 255;
-            if (origL > 0.55) {
-                const glow = Math.min(1, (origL - 0.55) / 0.33);
-                const pulse = 0.75 + 0.25 * Math.sin(t * 2.8);
-                // Electric-blue specular
-                b = clamp(b + Math.round(glow * 140));
-                g = clamp(g + Math.round(glow * 40));
-                // Purple rim pulse
-                const rim = Math.min(1, Math.max(0, (origL - 0.70) / 0.26)) * pulse;
-                r = clamp(r + Math.round(rim * 89));
-                b = clamp(b + Math.round(rim * 230));
-            }
-
-            // ── 7. Animated rain streaks ──────────────────────────────────────
-            // Normalise coordinates
-            const ux = x / w;
-            const uy = y / h;
-
-            // Rain cell
-            const rxCell = Math.floor(ux * 0.8 * 35 + t * 0.03 * 35 + 0);
-            const ryCell = Math.floor(uy * 1.8 + t * 1.5);
-            const rc = hash(rxCell, ryCell);
-            const streakX = (ux * 35 + rc * 0.3) % 1;
-            const streakFrac = (uy * 1.8 + t * 1.5 + rc) % 1;
-            const streakStr = Math.max(0, 1 - Math.abs(streakX - 0.5) * 22);
-            const streak = Math.min(1, Math.max(0, (streakStr - 0.95) / 0.05))
-                         * Math.min(1, Math.max(0, streakFrac / 0.3)) * 0.12;
-
-            const rain = Math.min(1, streak);
-            r = clamp(r + Math.round(rain * 0.15 * 255 * 0.45));
-            g = clamp(g + Math.round(rain * 0.55 * 255 * 0.45));
-            b = clamp(b + Math.round(rain * 0.95 * 255 * 0.45));
-
-            // ── 8. Atmospheric bottom mist ────────────────────────────────────
-            const mistY = Math.min(1, Math.max(0, (uy - 0.65) / 0.35));
-            if (mistY > 0) {
-                const m = mistY * 0.4;
-                r = clamp(Math.round(r * (1 - m) + (r * 0.55 + 10) * m));
-                g = clamp(Math.round(g * (1 - m) + (g * 0.55 + 20) * m));
-                b = clamp(Math.round(b * (1 - m) + (b * 0.55 + 56) * m));
-            }
-
-            // ── 9. Vignette ───────────────────────────────────────────────────
-            const vx = ux - 0.5, vy = uy - 0.5;
-            const vign = Math.max(0, 1 - (vx * vx + vy * vy) * 1.25);
-            r = clamp(Math.round(r * vign));
-            g = clamp(Math.round(g * vign));
-            b = clamp(Math.round(b * vign));
-
-            out[i]     = r;
-            out[i + 1] = g;
-            out[i + 2] = b;
-            out[i + 3] = 255;
+            out[oi]     = r;
+            out[oi + 1] = g;
+            out[oi + 2] = b;
+            out[oi + 3] = 255;
         }
     }
 
-    // Write result
-    const outImg = new ImageData(out, w, h);
-    offCtx.putImageData(outImg, 0, 0);
+    const outImg = new ImageData(out, bboxW, bboxH);
+    offCtx.putImageData(outImg, minX, minY);
+
+    // ── 10. Face Detail Enhancements (Ink outlines & slight tints) ────────────
+    if (faceResult && faceResult.faceLandmarks && faceResult.faceLandmarks.length > 0) {
+        const landmarks = faceResult.faceLandmarks[0];
+
+        offCtx.save();
+        
+        // Draw sharp black ink eyeliner
+        offCtx.beginPath();
+        drawRegionPath(offCtx, landmarks, LEFT_EYE, w, h);
+        drawRegionPath(offCtx, landmarks, RIGHT_EYE, w, h);
+        offCtx.globalCompositeOperation = "source-over";
+        offCtx.strokeStyle = "rgba(20, 15, 12, 0.9)";
+        offCtx.lineWidth = 2.5;
+        offCtx.stroke();
+        
+        // Subtle warm lip tint
+        offCtx.beginPath();
+        drawRegionPath(offCtx, landmarks, LIPS_OUTER, w, h);
+        offCtx.clip();
+        offCtx.globalCompositeOperation = "multiply";
+        offCtx.fillStyle = "rgba(220, 150, 130, 0.3)";
+        offCtx.fillRect(0, 0, w, h);
+        offCtx.restore();
+        
+        // Face Jawline Outline (Anime cel outline)
+        offCtx.save();
+        offCtx.beginPath();
+        const JAW = [234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454];
+        drawRegionPath(offCtx, landmarks, JAW, w, h);
+        offCtx.globalCompositeOperation = "source-over";
+        offCtx.strokeStyle = "rgba(20, 15, 12, 0.85)";
+        offCtx.lineWidth = 3.0;
+        offCtx.stroke();
+        offCtx.restore();
+    }
+
     targetCtx.drawImage(offCanvas!, 0, 0, w, h);
 }

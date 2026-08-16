@@ -258,66 +258,152 @@ const FRAG_ANIME = FRAG_HEADER + /* glsl */ `
         float gx = -tl - 2.0*ml - bl2 + tr2 + 2.0*mr + br2;
         float gy = -tl - 2.0*tm - tr2 + bl2 + 2.0*bm + br2;
         float edgeStr = sqrt(gx*gx + gy*gy);
-        float edge = smoothstep(0.05, 0.25, edgeStr);
+        float edge = 1.0 - smoothstep(0.3, 0.9, edgeStr * 2.5);
 
-        col = mix(col, vec3(0.08, 0.02, 0.06), edge); // dark mahogany ink
+        gl_FragColor = vec4(col * edge, 1.0);
+    }
+`;
 
-        // Anime soft glow
-        float glow = smoothstep(0.6, 1.0, luma(painted));
-        col += glow * vec3(0.1, 0.05, 0.2);
+ // ── Hand-drawn Anime: warm beige, ink lines, watercolor shading, paper texture ─
+ // @ts-ignore
+const _FRAG_HAND_DRAWN_ANIME = FRAG_HEADER + /* glsl */ `
+    float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float hash2(vec2 p) { return fract(sin(dot(p, vec2(311.7, 127.1))) * 83251.345); }
+
+    // Kuwahara-lite: 2×2 quadrant smoothing for painted/illustrated look
+    vec3 paintSmooth(vec2 uv) {
+        vec2 p = px();
+        float n = 9.0;
+        vec3 m0 = vec3(0.0), m1 = vec3(0.0), m2 = vec3(0.0), m3 = vec3(0.0);
+        float v0 = 0.0, v1 = 0.0, v2 = 0.0, v3 = 0.0;
+        for (int j = -2; j <= 0; j++) {
+            for (int i = -2; i <= 0; i++) {
+                vec3 c = tex(uv + p * vec2(float(i), float(j))).rgb;
+                m0 += c; v0 += dot(c, c);
+            }
+        }
+        for (int j = -2; j <= 0; j++) {
+            for (int i = 0; i <= 2; i++) {
+                vec3 c = tex(uv + p * vec2(float(i), float(j))).rgb;
+                m1 += c; v1 += dot(c, c);
+            }
+        }
+        for (int j = 0; j <= 2; j++) {
+            for (int i = -2; i <= 0; i++) {
+                vec3 c = tex(uv + p * vec2(float(i), float(j))).rgb;
+                m2 += c; v2 += dot(c, c);
+            }
+        }
+        for (int j = 0; j <= 2; j++) {
+            for (int i = 0; i <= 2; i++) {
+                vec3 c = tex(uv + p * vec2(float(i), float(j))).rgb;
+                m3 += c; v3 += dot(c, c);
+            }
+        }
+        m0 /= n; m1 /= n; m2 /= n; m3 /= n;
+        v0 = v0/n - dot(m0,m0);
+        v1 = v1/n - dot(m1,m1);
+        v2 = v2/n - dot(m2,m2);
+        v3 = v3/n - dot(m3,m3);
+        float minV = min(min(v0,v1), min(v2,v3));
+        if      (minV == v0) return m0;
+        else if (minV == v1) return m1;
+        else if (minV == v2) return m2;
+        else                 return m3;
+    }
+
+    void main() {
+        vec2 p = px();
+        vec2 uv = v_uv;
+
+        // 1. Painted illustrated base (Kuwahara-lite)
+        vec3 painted = paintSmooth(uv);
+
+        // 2. Beige/warm paper palette — desaturate toward warm ivory
+        float grey = luma(painted);
+        // Shift hue toward warm sepia: lift r/g, suppress b
+        vec3 warm = vec3(
+            grey * 0.96 + painted.r * 0.30,
+            grey * 0.86 + painted.g * 0.22,
+            grey * 0.62 + painted.b * 0.14
+        );
+        // Blend painted color with warm tone — keeps skin tones, mutes cold hues
+        vec3 col = mix(warm, painted * vec3(1.08, 0.97, 0.80), 0.38);
+        col = clamp(col, 0.0, 1.0);
+
+        // 3. Soft watercolor wash — gentle cross-blur for bleed effect
+        vec3 wash = vec3(0.0); float tw = 0.0;
+        for (int j = -3; j <= 3; j++) {
+            for (int i = -3; i <= 3; i++) {
+                float w = exp(-float(i*i + j*j) * 0.22);
+                wash += tex(uv + p * vec2(float(i)*1.8, float(j)*1.8)).rgb * w;
+                tw += w;
+            }
+        }
+        wash /= tw;
+        // Convert wash to warm tones too
+        float washGrey = luma(wash);
+        vec3 washWarm = mix(
+            vec3(washGrey*0.96, washGrey*0.86, washGrey*0.62),
+            wash * vec3(1.06, 0.95, 0.78),
+            0.35
+        );
+        col = mix(col, washWarm, 0.25); // soft watercolor bleed
+
+        // 4. Gentle contrast lift — anime-style clear tones
+        col = (col - 0.5) * 1.15 + 0.5;
+        col = clamp(col, 0.0, 1.0);
+
+        // 5. Ink line outlines — dilated Sobel on luminance
+        vec2 pe = p * 1.3;
+        float tl = luma(tex(uv + pe*vec2(-1.0, 1.0)).rgb);
+        float tm = luma(tex(uv + pe*vec2( 0.0, 1.0)).rgb);
+        float tr2= luma(tex(uv + pe*vec2( 1.0, 1.0)).rgb);
+        float ml = luma(tex(uv + pe*vec2(-1.0, 0.0)).rgb);
+        float mr = luma(tex(uv + pe*vec2( 1.0, 0.0)).rgb);
+        float bl2= luma(tex(uv + pe*vec2(-1.0,-1.0)).rgb);
+        float bm = luma(tex(uv + pe*vec2( 0.0,-1.0)).rgb);
+        float br2= luma(tex(uv + pe*vec2( 1.0,-1.0)).rgb);
+        float gx = -tl - 2.0*ml - bl2 + tr2 + 2.0*mr + br2;
+        float gy = -tl - 2.0*tm - tr2 + bl2 + 2.0*bm + br2;
+        float edgeStr = sqrt(gx*gx + gy*gy);
+        // Ink is dark warm brown (not pure black)
+        float inkAlpha = smoothstep(0.18, 0.55, edgeStr * 2.2);
+        vec3 inkColor = vec3(0.18, 0.12, 0.08); // warm dark ink
+        col = mix(col, inkColor, inkAlpha * 0.88);
+
+        // 6. Vintage paper texture overlay
+        float paperH = hash(uv * 480.0);
+        float paperH2 = hash2(uv * 320.0 + 0.5);
+        float paper = (paperH + paperH2) * 0.5; // averaged = smoother grain
+        col *= (0.93 + paper * 0.10); // subtle brightness variation = paper fiber
+
+        // 7. Tiny animated grain (like aged illustration)
+        float grain = hash(uv * u_time * 73.0 + 0.3) - 0.5;
+        col += grain * 0.018;
+
+        // 8. Warm ivory background push (flatten very light areas toward paper color)
+        float brightness = luma(col);
+        vec3 paperColor = vec3(0.96, 0.92, 0.82); // vintage ivory
+        col = mix(col, paperColor, smoothstep(0.78, 1.0, brightness) * 0.45);
+
+        // 9. Soft vignette — darker warm edges
+        vec2 uv2 = uv - 0.5;
+        float vign = 1.0 - dot(uv2, uv2) * 1.1;
+        col *= clamp(vign, 0.0, 1.0);
+        // Tint vignette edges toward sepia
+        col = mix(col * vec3(0.85, 0.78, 0.65), col, clamp(vign * 1.2, 0.0, 1.0));
 
         gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
     }
 `;
 
-// ── Hand-Drawn Anime: Grayscale + ink hatching ────────────────────────────────
-const FRAG_HAND_DRAWN_ANIME = FRAG_HEADER + /* glsl */ `
-    float luma(vec4 c) { return dot(c.rgb, vec3(0.299, 0.587, 0.114)); }
+// ── Oil Painting: Kuwahara + warm amber texture + Chiaroscuro ────────────────
+const FRAG_OIL_PAINTING = FRAG_HEADER + /* glsl */ `
+    float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
     float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
-    void main() {
-        vec2 p = px();
-        vec4 orig = tex(v_uv);
-        float grey = luma(orig);
-
-        // Soft grey with warm paper overlay
-        vec3 paper = vec3(0.95, 0.91, 0.84);
-        vec3 col = mix(paper, vec3(grey) * 0.7, 0.85);
-
-        // Ink hatching: diagonal lines proportional to darkness
-        float hatch = 0.0;
-        float lineFreq = 140.0;
-        if (grey < 0.5) {
-            float d = fract((v_uv.x - v_uv.y) * lineFreq);
-            hatch += smoothstep(0.5, 0.55, d) * (0.5 - grey);
-        }
-        if (grey < 0.3) {
-            float d = fract((v_uv.x + v_uv.y) * lineFreq);
-            hatch += smoothstep(0.5, 0.55, d) * (0.3 - grey) * 1.5;
-        }
-        hatch = clamp(hatch, 0.0, 1.0);
-
-        // Sobel for contour lines
-        float tl = luma(tex(v_uv + vec2(-p.x,  p.y)));
-        float tr = luma(tex(v_uv + vec2( p.x,  p.y)));
-        float bl = luma(tex(v_uv + vec2(-p.x, -p.y)));
-        float br = luma(tex(v_uv + vec2( p.x, -p.y)));
-        float l  = luma(tex(v_uv + vec2(-p.x,  0.0)));
-        float r  = luma(tex(v_uv + vec2( p.x,  0.0)));
-        float t2 = luma(tex(v_uv + vec2( 0.0,  p.y)));
-        float b  = luma(tex(v_uv + vec2( 0.0, -p.y)));
-        float gx = -tl - 2.0*l - bl + tr + 2.0*r + br;
-        float gy = -tl - 2.0*t2 - tr + bl + 2.0*b + br;
-        float edge = smoothstep(0.08, 0.22, sqrt(gx*gx + gy*gy));
-
-        col = mix(col, col * (1.0 - hatch * 0.8), 1.0);
-        col = mix(col, vec3(0.08, 0.06, 0.04), edge);
-        gl_FragColor = vec4(col, 1.0);
-    }
-`;
-
-// ── Oil Painting: Kuwahara + warm amber texture ───────────────────────────────
-const FRAG_OIL_PAINTING = FRAG_HEADER + /* glsl */ `
     vec4 kuwahara(int r) {
         vec2 p = px();
         vec4 mean[4]; float variance[4];
@@ -333,14 +419,61 @@ const FRAG_OIL_PAINTING = FRAG_HEADER + /* glsl */ `
     }
 
     void main() {
+        vec2 uv = v_uv;
+        // Pass 1: Painted brushstrokes via Kuwahara
         vec4 col = kuwahara(3);
-        // Warm oil amber grade
-        col.rgb *= vec3(1.12, 1.02, 0.80);
+        
+        float lum = luma(col.rgb);
+        
+        // Pass 2: Classical Color Grading (Rembrandt / Vermeer palette)
+        // Desaturate slightly for an antique, non-digital look
+        col.rgb = mix(vec3(lum), col.rgb, 0.75);
+        
+        // Warm oil grade (golden midtones, deep earthy shadows)
+        // Mid-tone lift (warm peach/ochre)
+        col.rgb += vec3(0.08, 0.05, 0.02) * (1.0 - abs(lum - 0.5) * 2.0);
+        // Shadow tint (deep umber / olive)
+        col.rgb = mix(col.rgb * vec3(0.75, 0.55, 0.35), col.rgb, smoothstep(0.0, 0.4, lum));
+        // Highlight tint (warm cream / ivory)
+        col.rgb = mix(col.rgb, col.rgb * vec3(1.15, 1.05, 0.90), smoothstep(0.6, 1.0, lum));
+
+        // Contrast and depth curve
+        col.rgb = (col.rgb - 0.5) * 1.35 + 0.5;
         col.rgb = clamp(col.rgb, 0.0, 1.0);
-        // Contrast boost
-        col.rgb = (col.rgb - 0.5) * 1.3 + 0.5;
-        col.rgb = clamp(col.rgb, 0.0, 1.0);
-        gl_FragColor = vec4(col.rgb, 1.0);
+
+        // Pass 3: Canvas & Impasto Texture
+        vec2 tuv = uv * 800.0;
+        // Woven canvas thread pattern
+        float texX = sin(tuv.x) * cos(tuv.y * 0.5);
+        float texY = sin(tuv.y) * cos(tuv.x * 0.5);
+        float canvas = (texX + texY) * 0.015;
+        
+        // Larger paint cracks/texture (simulated impasto)
+        float noise = hash(floor(uv * 400.0));
+        float crackle = step(0.95, noise) * 0.05;
+        
+        // Apply textures to luminance
+        col.rgb += canvas;
+        col.rgb -= crackle * vec3(0.8, 0.6, 0.4);
+
+        // Subtle brush grain (high frequency)
+        float grain = hash(uv * 1000.0) - 0.5;
+        col.rgb += grain * 0.025;
+
+        // Pass 4: Dramatic Chiaroscuro Vignette
+        // Center slightly above middle (standard portrait face height)
+        float dist = distance(uv, vec2(0.5, 0.45)); 
+        float vign = smoothstep(0.75, 0.25, dist);
+        
+        // Background falls into deep, warm, dark shadow
+        vec3 darkBackground = col.rgb * vec3(0.25, 0.15, 0.08);
+        col.rgb = mix(darkBackground, col.rgb, vign);
+
+        // Add a slight luminous glow to the focal point
+        float glow = smoothstep(0.35, 0.0, dist);
+        col.rgb += glow * vec3(0.08, 0.05, 0.02);
+
+        gl_FragColor = vec4(clamp(col.rgb, 0.0, 1.0), 1.0);
     }
 `;
 
@@ -354,226 +487,87 @@ const FRAG_OIL_PAINTING = FRAG_HEADER + /* glsl */ `
 //   Pass 6: Cinematic vignette
 const FRAG_CYBERPUNK = FRAG_HEADER + /* glsl */ `
     float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-
-    // ── Kuwahara 4-quadrant filter (radius 3) ─────────────────────────────────
-    // Samples four overlapping 4×4 regions, picks the one with lowest variance.
-    // This is the core technique that makes video look like illustrated paint.
-    vec3 kuwahara(vec2 uv) {
-        vec2 p = px();
-        // We unroll 4 quadrants manually (no dynamic loops for GLSL ES compat)
-        // Each quadrant is a 4×4 block: TL, TR, BL, BR
-        float n = 16.0;
-
-        // TL quadrant: offsets -3..0 x, -3..0 y
-        vec3 m0 = vec3(0.0); float v0 = 0.0;
-        m0 += tex(uv + p * vec2(-3.0,-3.0)).rgb; m0 += tex(uv + p * vec2(-2.0,-3.0)).rgb;
-        m0 += tex(uv + p * vec2(-1.0,-3.0)).rgb; m0 += tex(uv + p * vec2( 0.0,-3.0)).rgb;
-        m0 += tex(uv + p * vec2(-3.0,-2.0)).rgb; m0 += tex(uv + p * vec2(-2.0,-2.0)).rgb;
-        m0 += tex(uv + p * vec2(-1.0,-2.0)).rgb; m0 += tex(uv + p * vec2( 0.0,-2.0)).rgb;
-        m0 += tex(uv + p * vec2(-3.0,-1.0)).rgb; m0 += tex(uv + p * vec2(-2.0,-1.0)).rgb;
-        m0 += tex(uv + p * vec2(-1.0,-1.0)).rgb; m0 += tex(uv + p * vec2( 0.0,-1.0)).rgb;
-        m0 += tex(uv + p * vec2(-3.0, 0.0)).rgb; m0 += tex(uv + p * vec2(-2.0, 0.0)).rgb;
-        m0 += tex(uv + p * vec2(-1.0, 0.0)).rgb; m0 += tex(uv).rgb;
-        m0 /= n;
-        vec3 d0 = tex(uv + p * vec2(-1.5,-1.5)).rgb - m0; v0 = dot(d0,d0);
-
-        // TR quadrant: offsets 0..3 x, -3..0 y
-        vec3 m1 = vec3(0.0); float v1 = 0.0;
-        m1 += tex(uv + p * vec2( 0.0,-3.0)).rgb; m1 += tex(uv + p * vec2( 1.0,-3.0)).rgb;
-        m1 += tex(uv + p * vec2( 2.0,-3.0)).rgb; m1 += tex(uv + p * vec2( 3.0,-3.0)).rgb;
-        m1 += tex(uv + p * vec2( 0.0,-2.0)).rgb; m1 += tex(uv + p * vec2( 1.0,-2.0)).rgb;
-        m1 += tex(uv + p * vec2( 2.0,-2.0)).rgb; m1 += tex(uv + p * vec2( 3.0,-2.0)).rgb;
-        m1 += tex(uv + p * vec2( 0.0,-1.0)).rgb; m1 += tex(uv + p * vec2( 1.0,-1.0)).rgb;
-        m1 += tex(uv + p * vec2( 2.0,-1.0)).rgb; m1 += tex(uv + p * vec2( 3.0,-1.0)).rgb;
-        m1 += tex(uv).rgb;                        m1 += tex(uv + p * vec2( 1.0, 0.0)).rgb;
-        m1 += tex(uv + p * vec2( 2.0, 0.0)).rgb; m1 += tex(uv + p * vec2( 3.0, 0.0)).rgb;
-        m1 /= n;
-        vec3 d1 = tex(uv + p * vec2( 1.5,-1.5)).rgb - m1; v1 = dot(d1,d1);
-
-        // BL quadrant: offsets -3..0 x, 0..3 y
-        vec3 m2 = vec3(0.0); float v2 = 0.0;
-        m2 += tex(uv + p * vec2(-3.0, 0.0)).rgb; m2 += tex(uv + p * vec2(-2.0, 0.0)).rgb;
-        m2 += tex(uv + p * vec2(-1.0, 0.0)).rgb; m2 += tex(uv).rgb;
-        m2 += tex(uv + p * vec2(-3.0, 1.0)).rgb; m2 += tex(uv + p * vec2(-2.0, 1.0)).rgb;
-        m2 += tex(uv + p * vec2(-1.0, 1.0)).rgb; m2 += tex(uv + p * vec2( 0.0, 1.0)).rgb;
-        m2 += tex(uv + p * vec2(-3.0, 2.0)).rgb; m2 += tex(uv + p * vec2(-2.0, 2.0)).rgb;
-        m2 += tex(uv + p * vec2(-1.0, 2.0)).rgb; m2 += tex(uv + p * vec2( 0.0, 2.0)).rgb;
-        m2 += tex(uv + p * vec2(-3.0, 3.0)).rgb; m2 += tex(uv + p * vec2(-2.0, 3.0)).rgb;
-        m2 += tex(uv + p * vec2(-1.0, 3.0)).rgb; m2 += tex(uv + p * vec2( 0.0, 3.0)).rgb;
-        m2 /= n;
-        vec3 d2 = tex(uv + p * vec2(-1.5, 1.5)).rgb - m2; v2 = dot(d2,d2);
-
-        // BR quadrant: offsets 0..3 x, 0..3 y
-        vec3 m3 = vec3(0.0); float v3 = 0.0;
-        m3 += tex(uv).rgb;                        m3 += tex(uv + p * vec2( 1.0, 0.0)).rgb;
-        m3 += tex(uv + p * vec2( 2.0, 0.0)).rgb; m3 += tex(uv + p * vec2( 3.0, 0.0)).rgb;
-        m3 += tex(uv + p * vec2( 0.0, 1.0)).rgb; m3 += tex(uv + p * vec2( 1.0, 1.0)).rgb;
-        m3 += tex(uv + p * vec2( 2.0, 1.0)).rgb; m3 += tex(uv + p * vec2( 3.0, 1.0)).rgb;
-        m3 += tex(uv + p * vec2( 0.0, 2.0)).rgb; m3 += tex(uv + p * vec2( 1.0, 2.0)).rgb;
-        m3 += tex(uv + p * vec2( 2.0, 2.0)).rgb; m3 += tex(uv + p * vec2( 3.0, 2.0)).rgb;
-        m3 += tex(uv + p * vec2( 0.0, 3.0)).rgb; m3 += tex(uv + p * vec2( 1.0, 3.0)).rgb;
-        m3 += tex(uv + p * vec2( 2.0, 3.0)).rgb; m3 += tex(uv + p * vec2( 3.0, 3.0)).rgb;
-        m3 /= n;
-        vec3 d3 = tex(uv + p * vec2( 1.5, 1.5)).rgb - m3; v3 = dot(d3,d3);
-
-        // Pick quadrant with lowest variance (most uniform = painted region)
-        vec3 result = m0;
-        float minV = v0;
-        if (v1 < minV) { minV = v1; result = m1; }
-        if (v2 < minV) { minV = v2; result = m2; }
-        if (v3 < minV) {             result = m3; }
-        return result;
-    }
-
-    // ── Hash for noise / rain ─────────────────────────────────────────────────
     float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
-    // ── Skin tone detection ───────────────────────────────────────────────────
-    // Returns 0..1: how "skin-like" the colour is
-    float skinWeight(vec3 c) {
-        // Heuristic: r > g > b, warm reddish
-        float warm = smoothstep(0.0, 0.3, c.r - c.b);
-        float light = smoothstep(0.12, 0.85, c.r);
-        float notSat = 1.0 - smoothstep(0.0, 0.6, abs(c.r - c.g) + abs(c.g - c.b));
-        return clamp(warm * light * (0.4 + notSat * 0.6), 0.0, 1.0);
+    // Fast Kuwahara for painted base
+    vec4 kuwahara(int r) {
+        vec2 p = px();
+        vec4 mean[4]; float variance[4];
+        for (int q = 0; q < 4; q++) { mean[q] = vec4(0.0); variance[q] = 0.0; }
+        float n = float((r + 1) * (r + 1));
+        for (int j = -3; j <= 0; j++) { for (int i = -3; i <= 0; i++) { vec4 c = tex(v_uv + vec2(float(i), float(j)) * p); mean[0] += c; variance[0] += dot(c.rgb, c.rgb); } }
+        for (int j = -3; j <= 0; j++) { for (int i = 0; i <= 3; i++) { vec4 c = tex(v_uv + vec2(float(i), float(j)) * p); mean[1] += c; variance[1] += dot(c.rgb, c.rgb); } }
+        for (int j = 0; j <= 3; j++) { for (int i = -3; i <= 0; i++) { vec4 c = tex(v_uv + vec2(float(i), float(j)) * p); mean[2] += c; variance[2] += dot(c.rgb, c.rgb); } }
+        for (int j = 0; j <= 3; j++) { for (int i = 0; i <= 3; i++) { vec4 c = tex(v_uv + vec2(float(i), float(j)) * p); mean[3] += c; variance[3] += dot(c.rgb, c.rgb); } }
+        float minV = 1e9; vec4 result = tex(v_uv);
+        for (int q = 0; q < 4; q++) { mean[q] /= n; float v = variance[q] / n - dot(mean[q].rgb, mean[q].rgb); if (v < minV) { minV = v; result = mean[q]; } }
+        return result;
     }
 
     void main() {
         vec2 uv = v_uv;
-        vec2 p  = px();
+        vec2 p = px();
 
-        // ── Pass 1: Kuwahara painted surface ─────────────────────────────────
-        vec3 painted = kuwahara(uv);
-        // Second light pass at half radius for fine detail
-        vec2 ph = p * 1.5;
-        vec3 fine = vec3(0.0);
-        fine += tex(uv + ph * vec2(-1.0,-1.0)).rgb + tex(uv + ph * vec2( 0.0,-1.0)).rgb + tex(uv + ph * vec2( 1.0,-1.0)).rgb;
-        fine += tex(uv + ph * vec2(-1.0, 0.0)).rgb + tex(uv).rgb                         + tex(uv + ph * vec2( 1.0, 0.0)).rgb;
-        fine += tex(uv + ph * vec2(-1.0, 1.0)).rgb + tex(uv + ph * vec2( 0.0, 1.0)).rgb + tex(uv + ph * vec2( 1.0, 1.0)).rgb;
-        fine /= 9.0;
-        vec3 surface = mix(painted, fine, 0.35);
+        // 1. Chromatic Aberration for edge color separation
+        float aberr = 0.003;
+        vec3 col;
+        col.r = tex(uv + vec2(aberr, 0.0)).r;
+        col.g = tex(uv).g;
+        col.b = tex(uv - vec2(aberr, 0.0)).b;
 
-        // ── Pass 2: Anime cel-shading with skin-aware palette ────────────────
-        float L = luma(surface);
-        // Mild contrast crunch to push mid-tones → anime flat look
-        L = clamp((L - 0.42) * 1.55 + 0.42, 0.0, 1.0);
-        float band = floor(L * 7.0) / 7.0;  // 7 bands for richer gradation
+        // Base painted surface
+        vec3 painted = kuwahara(3).rgb;
+        
+        // Blend original sharp image with painted for detail retention
+        col = mix(col, painted, 0.6);
 
-        // Base cyberpunk dark palette (shadow blues, then skin, then neon)
-        vec3 band0 = vec3(0.01, 0.02, 0.08);   // deep black shadow
-        vec3 band1 = vec3(0.05, 0.08, 0.22);   // dark blue-indigo
-        vec3 band2 = vec3(0.12, 0.18, 0.40);   // mid indigo
-        vec3 band3 = vec3(0.75, 0.62, 0.52);   // anime warm skin (key tone)
-        vec3 band4 = vec3(0.90, 0.78, 0.68);   // skin highlight
-        vec3 band5 = vec3(0.78, 0.90, 0.98);   // cool rim highlight
-        vec3 band6 = vec3(0.95, 0.98, 1.00);   // bright specular
+        float lum = luma(col);
 
-        vec3 cel;
-        if      (band < 0.143) cel = band0;
-        else if (band < 0.286) cel = band1;
-        else if (band < 0.429) cel = band2;
-        else if (band < 0.571) cel = band3;
-        else if (band < 0.714) cel = band4;
-        else if (band < 0.857) cel = band5;
-        else                   cel = band6;
+        // 2. Cyberpunk Color Grade — additive toning (no red blowout)
+        // Desaturate first then selectively re-tint by luminance zone
+        vec3 grey = vec3(lum);
 
-        // Skin-tone weighting: blend warm skin bands into skin-detected areas
-        float sw = skinWeight(surface);
-        vec3 skinCel = mix(cel, mix(band3, band4, clamp((L - 0.45) * 3.0, 0.0, 1.0)), sw * 0.7);
+        // Shadow zone → deep indigo/navy
+        vec3 shadowCol = mix(grey, vec3(0.05, 0.03, 0.28), 0.75);
+        // Midtone zone → warm magenta-violet
+        vec3 midCol    = mix(col,  vec3(0.72, 0.18, 0.85), 0.45);
+        // Highlight zone → electric cyan
+        vec3 highCol   = mix(col,  vec3(0.30, 0.95, 1.00), 0.55);
 
-        // Hue-tinted saturation from original — preserves identity
-        vec3 hued = surface * vec3(0.55, 1.15, 1.60);   // teal-shift for cyber look
-        vec3 skinHued = surface * vec3(1.20, 0.95, 0.85); // warm for skin
-        vec3 hueTint = mix(hued, skinHued, sw);
-        vec3 celResult = mix(skinCel, clamp(hueTint, 0.0, 1.0), 0.20);
+        // Blend zones by luminance
+        vec3 graded = mix(shadowCol, midCol,  smoothstep(0.0, 0.45, lum));
+              graded = mix(graded,   highCol, smoothstep(0.50, 0.85, lum));
 
-        // ── Pass 3: Dilated Sobel — thick anime ink outlines ─────────────────
-        // Sample at 2× pixel distance for thicker lines
-        vec2 pe = p * 1.8;
-        float tl = luma(tex(uv + pe * vec2(-1.0, 1.0)).rgb);
-        float tm = luma(tex(uv + pe * vec2( 0.0, 1.0)).rgb);
-        float tr2 = luma(tex(uv + pe * vec2( 1.0, 1.0)).rgb);
-        float ml = luma(tex(uv + pe * vec2(-1.0, 0.0)).rgb);
-        float mr = luma(tex(uv + pe * vec2( 1.0, 0.0)).rgb);
-        float bl2 = luma(tex(uv + pe * vec2(-1.0,-1.0)).rgb);
-        float bm = luma(tex(uv + pe * vec2( 0.0,-1.0)).rgb);
-        float br2 = luma(tex(uv + pe * vec2( 1.0,-1.0)).rgb);
-        float gx = -tl - 2.0*ml - bl2 + tr2 + 2.0*mr + br2;
-        float gy = -tl - 2.0*tm - tr2 + bl2 + 2.0*bm + br2;
-        float edgeStr = sqrt(gx*gx + gy*gy);
-        // Lower threshold = more lines (anime has many outlines)
-        float edge = smoothstep(0.04, 0.22, edgeStr);
+        // Modest contrast lift on the graded result
+        col = (graded - 0.5) * 1.15 + 0.5;
 
-        // Second pass at 3.5× for thin internal face lines
-        vec2 pf = p * 3.5;
-        float tl2 = luma(tex(uv + pf * vec2(-1.0, 1.0)).rgb);
-        float tr3 = luma(tex(uv + pf * vec2( 1.0, 1.0)).rgb);
-        float bl3 = luma(tex(uv + pf * vec2(-1.0,-1.0)).rgb);
-        float br3 = luma(tex(uv + pf * vec2( 1.0,-1.0)).rgb);
-        float ml2 = luma(tex(uv + pf * vec2(-1.0, 0.0)).rgb);
-        float mr2 = luma(tex(uv + pf * vec2( 1.0, 0.0)).rgb);
-        float tm2 = luma(tex(uv + pf * vec2( 0.0, 1.0)).rgb);
-        float bm2 = luma(tex(uv + pf * vec2( 0.0,-1.0)).rgb);
-        float gx2 = -tl2 - 2.0*ml2 - bl3 + tr3 + 2.0*mr2 + br3;
-        float gy2 = -tl2 - 2.0*tm2 - tr3 + bl3 + 2.0*bm2 + br3;
-        float edge2 = smoothstep(0.06, 0.25, sqrt(gx2*gx2 + gy2*gy2)) * 0.55;
+        // 3. Neon Bloom — cyan glow only on bright highlights
+        float glowMask = smoothstep(0.70, 0.95, lum);
+        vec3 bloom = glowMask * vec3(0.10, 0.85, 1.00) * 0.55;
+        col = clamp(col + bloom, 0.0, 1.0);
 
-        float finalEdge = clamp(edge + edge2, 0.0, 1.0);
+        // 4. Electric edge rim: add a faint magenta fringe near high-contrast edges
+        float edgeLum = abs(lum - luma(tex(uv + p * vec2(2.0, 0.0)).rgb));
+        col += edgeLum * vec3(0.9, 0.0, 0.8) * 0.4;
 
-        // ── Pass 4: Neon rim lighting + chromatic aberration glow ─────────────
-        float origL = luma(surface);
-        // Chromatic aberration for electric glow
-        float aberr = 0.007;
-        float rCh = tex(uv + vec2( aberr, 0.0)).r;
-        float bCh = tex(uv + vec2(-aberr, 0.0)).b;
-        float gCh = tex(uv + vec2( 0.0, aberr * 0.5)).g;
+        // 5. Subtle scanline overlay
+        float scanline = sin(uv.y * 900.0) * 0.025;
+        col -= scanline;
+        col = clamp(col, 0.0, 1.0);
 
-        // Specular areas get neon electric-blue glow
-        float glowMask = smoothstep(0.55, 0.88, origL);
-        vec3 neon = vec3(rCh * 0.05, gCh * 0.15, bCh * 0.55) * glowMask * 2.2;
+        // 6. Cinematic vignette — deep purple-black at edges
+        float dist = distance(uv, vec2(0.5, 0.45));
+        float vign = smoothstep(0.80, 0.28, dist);
+        vec3 vignetteCol = col * vec3(0.12, 0.03, 0.30);
+        col = mix(vignetteCol, col, vign);
 
-        // Pulsing purple rim on bright edges (rim lighting)
-        float rimEdge = smoothstep(0.70, 0.96, origL);
-        float pulse = 0.75 + 0.25 * sin(u_time * 2.8);
-        neon += rimEdge * pulse * vec3(0.35, 0.05, 0.90);
+        // 7. Rain streaks — faint cyan trickles
+        vec2 rainUV = vec2(floor(uv.x * 25.0) / 25.0, uv.y + u_time * 1.8);
+        float rainNoise = hash(vec2(floor(uv.x * 25.0), floor(uv.y * 3.0)));
+        float rain = smoothstep(0.96, 1.0, rainNoise) * 0.15;
+        col = clamp(col + rain * vec3(0.4, 0.9, 1.0), 0.0, 1.0);
 
-        // Side rim: electric cyan on left/right screen edges (cinematic)
-        float sideRim = smoothstep(0.3, 0.0, abs(uv.x - 0.5));
-        neon += sideRim * 0.18 * vec3(0.0, 0.8, 1.0) * rimEdge;
-
-        // ── Pass 5: Composite cel + neon + ink ──────────────────────────────
-        vec3 col = clamp(celResult + neon, 0.0, 1.0);
-
-        // Anime ink: very dark blue-purple (not pure black)
-        vec3 inkColor = vec3(0.02, 0.01, 0.10);
-        col = mix(col, inkColor, finalEdge);
-
-        // ── Pass 6: Rain streaks + atmospheric mist ──────────────────────────
-        // Animated rain drops falling diagonally
-        vec2 rainUV = vec2(uv.x * 0.8 + u_time * 0.03, uv.y * 12.0 + u_time * 2.2);
-        float rainCell = hash(floor(rainUV));
-        float rainFrac = fract(rainUV.y + rainCell * 0.7);
-        float rainDrop = smoothstep(0.92, 1.0, rainFrac) * smoothstep(0.06, 0.0, fract(rainUV.x));
-        // Thin rain streak
-        vec2 streakUV = vec2(fract(uv.x * 35.0 + rainCell * 0.3), fract(uv.y * 1.8 + u_time * 1.5 + rainCell));
-        float streak = smoothstep(0.95, 1.0, 1.0 - abs(streakUV.x - 0.5) * 22.0) * smoothstep(0.0, 0.3, streakUV.y);
-        float rain = clamp(rainDrop * 0.28 + streak * 0.12, 0.0, 1.0);
-        col += rain * vec3(0.15, 0.55, 0.95) * 0.45;  // blue-tinted rain
-
-        // Atmospheric mist (bottom fog)
-        float mistY = smoothstep(0.65, 1.0, uv.y);
-        col = mix(col, col * 0.55 + vec3(0.04, 0.08, 0.22) * 0.45, mistY * 0.4);
-
-        // ── Pass 7: Cinematic vignette + neon border bloom ───────────────────
-        vec2 uv2 = uv - 0.5;
-        float vign = 1.0 - dot(uv2, uv2) * 1.25;
-        col *= max(vign, 0.0);
-
-        // Neon border glow (purple top, blue bottom)
-        float border = 1.0 - smoothstep(0.0, 0.12, min(min(uv.x, 1.0-uv.x), min(uv.y, 1.0-uv.y)));
-        col += border * mix(vec3(0.55, 0.0, 0.90), vec3(0.0, 0.45, 1.0), uv.y) * 0.35;
-
-        gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+        gl_FragColor = vec4(col, 1.0);
     }
 `;
 
@@ -783,16 +777,13 @@ export const SHADER_SRC: Record<string, string> = {
     "editorial-ink":    FRAG_SKETCH,            // Sobel pencil on paper
     watercolor:         FRAG_WATERCOLOR,        // Kuwahara painting
     "film-noir":        FRAG_SKETCH,            // edge-based + will get b&w via CSS fallback
-    graphite:           FRAG_SKETCH,            // pencil / graphite
-    "soft-3d":          FRAG_PIXAR,             // smooth + vivid 3D look
-    "cyber-editorial":  FRAG_CYBERPUNK,         // full anime+neon pipeline
+    "oil-painting":     FRAG_OIL_PAINTING,      // Kuwahara + oil style
+    "3d-anime":         FRAG_PIXAR,             // 3D movie style
+    cyberpunk:          FRAG_CYBERPUNK,         // Neon cyberpunk
     "vintage-film":     FRAG_OIL_PAINTING,      // warm Kuwahara + amber grade
     // ── Legacy IDs (kept for backward compat) ────────────────────────────
     sketch:             FRAG_SKETCH,
     anime:              FRAG_ANIME,
-    "hand-drawn-anime": FRAG_HAND_DRAWN_ANIME,
-    "oil-painting":     FRAG_OIL_PAINTING,
-    cyberpunk:          FRAG_CYBERPUNK,
     "cyberpunk-girl":   FRAG_CYBERPUNK_GIRL,
     movie3d:            FRAG_MOVIE3D,
     pixar:              FRAG_PIXAR,

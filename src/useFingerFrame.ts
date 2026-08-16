@@ -20,6 +20,8 @@ import {
     FilesetResolver,
     HandLandmarker,
 } from "@mediapipe/tasks-vision";
+import type { FaceLandmarkerResult } from "@mediapipe/tasks-vision";
+import { createFaceTracker, getFaceTracker } from "./trackers/faceTracker";
 import { computeQuad, dist, lerpPt, detectGesture } from "./rendering/fingerFrameRenderer";
 import type { Point } from "./rendering/fingerFrameRenderer";
 import { drawFrameOutline, STYLES, createFrameState } from "./styles/effects";
@@ -137,6 +139,9 @@ export function useFingerFrame(): UseFingerFrameReturn {
     const lostFramesRef    = useRef(0);
     const jumpFramesRef    = useRef(0);
     const lastVideoTimeRef = useRef(-1);
+    
+    // Face tracking state
+    const faceResultRef    = useRef<FaceLandmarkerResult | null>(null);
 
     // ── AI pipeline refs ──────────────────────────────────────────────────────
     // The latest AI-transformed canvas result, cached and reused every RAF frame
@@ -288,6 +293,12 @@ export function useFingerFrame(): UseFingerFrameReturn {
             try {
                 const timestampMs = Math.round(performance.now());
                 const results = tracker.detectForVideo(video, timestampMs);
+                
+                const faceTracker = getFaceTracker();
+                if (faceTracker) {
+                    faceResultRef.current = faceTracker.detectForVideo(video, timestampMs);
+                }
+
                 if (results?.landmarks?.length >= 1) {
                     targetQuad = computeQuad(results.landmarks, w, h, frameActiveRef.current);
 
@@ -404,7 +415,7 @@ export function useFingerFrame(): UseFingerFrameReturn {
             } else {
                 // ✅ Local CPU filter — always produces visible pixels immediately
                 // This is the guaranteed fallback when AI is pending / no API key
-                const filterCanvas = getFilteredCanvas(video, w, h, style, t, null);
+                const filterCanvas = getFilteredCanvas(video, w, h, style, t, null, quad, faceResultRef.current);
                 console.debug(`[Composite] Local filter rendered: ${filterCanvas.width}x${filterCanvas.height}`);
                 ctx.drawImage(filterCanvas, 0, 0, w, h);
                 ctx.restore();
@@ -502,6 +513,10 @@ export function useFingerFrame(): UseFingerFrameReturn {
             const compositor = compositorRef.current;
             if (!backend || !compositor) return;
 
+            // Reuse a single canvas for mirroring to prevent memory leaks (GL_OUT_OF_MEMORY)
+            const mirrorCanvas = document.createElement("canvas");
+            const mCtx = mirrorCanvas.getContext("2d", { willReadFrequently: true })!;
+
             while (aiRunningRef.current) {
                 // Only infer when a polygon is visible and we're not already waiting
                 const quad = cornersRef.current;
@@ -511,20 +526,26 @@ export function useFingerFrame(): UseFingerFrameReturn {
 
                 if (quad && video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !isInferringRef.current && styleDef) {
                     isInferringRef.current = true;
+                    let croppedImage: HTMLCanvasElement | null = null;
                     try {
                         // Mirror the video to a temporary canvas (webcam is flipped)
                         const w = video.videoWidth || 640;
                         const h = video.videoHeight || 480;
-                        const mirrorCanvas = document.createElement("canvas");
-                        mirrorCanvas.width = w;
-                        mirrorCanvas.height = h;
-                        const mCtx = mirrorCanvas.getContext("2d")!;
+                        
+                        if (mirrorCanvas.width !== w || mirrorCanvas.height !== h) {
+                            mirrorCanvas.width = w;
+                            mirrorCanvas.height = h;
+                        }
+                        
+                        mCtx.save();
+                        mCtx.clearRect(0, 0, w, h);
                         mCtx.translate(w, 0);
                         mCtx.scale(-1, 1);
                         mCtx.drawImage(video, 0, 0, w, h);
+                        mCtx.restore();
 
                         console.log("[AI Filter] Input frame captured");
-                        const croppedImage = compositor.extractRegion(mirrorCanvas, quad);
+                        croppedImage = compositor.extractRegion(mirrorCanvas, quad);
 
                         if (croppedImage.width > 4 && croppedImage.height > 4) {
                             console.log("[AI Filter] Request started");
@@ -550,6 +571,10 @@ export function useFingerFrame(): UseFingerFrameReturn {
                         console.error("[AI Filter] ERROR", e);
                         console.log("[AI Filter] Falling back to original camera");
                     } finally {
+                        if (croppedImage) {
+                            croppedImage.width = 0;
+                            croppedImage.height = 0;
+                        }
                         isInferringRef.current = false;
                     }
                 }
@@ -574,6 +599,9 @@ export function useFingerFrame(): UseFingerFrameReturn {
                 const tracker = await getHandTracker();
                 if (cancelled) return;
                 trackerRef.current = tracker;
+
+                await createFaceTracker();
+                if (cancelled) return;
 
                 await startCamera();
 
