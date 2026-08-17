@@ -19,14 +19,11 @@ import type { Point } from "../rendering/fingerFrameRenderer";
 // ─────────────────────────────────────────────
 
 export const STYLE_IDS = [
-    "cinematic",
-    "editorial-ink",
-    "watercolor",
-    "film-noir",
     "oil-painting",
-    "3d-anime",
     "cyberpunk",
-    "vintage-film",
+    "3d-anime",
+    "hand-drawn-anime",
+    "watercolor",
 ] as const;
 
 export type StyleId = (typeof STYLE_IDS)[number];
@@ -52,77 +49,50 @@ export interface StyleDef {
 
 export const STYLES: StyleDef[] = [
     {
-        id: "cinematic",
-        label: "Cinematic",
-        shortcut: "1",
-        accentColor: "#f59e0b",
-        accentColor2: "#fbbf24",
-        cornerStyle: "bracket",
-        description: "cinematic editorial beauty, soft natural lighting, premium portrait photography, subtle skin smoothing, realistic skin texture, cinematic highlights, soft shadows, elegant contrast, slightly warm tones, clean whites, subtle glow, professional color grading, fine film grain, high detail, realistic eyes, realistic hair, natural facial proportions, luxury editorial photography",
-    },
-    {
-        id: "editorial-ink",
-        label: "Editorial Ink",
-        shortcut: "2",
-        accentColor: "#94a3b8",
-        accentColor2: "#cbd5e1",
-        cornerStyle: "sketch",
-        description: "Premium editorial ink portrait, elegant fine black ink linework, sophisticated facial contours, delicate cross-hatching, subtle paper texture, restrained neutral palette, refined fashion magazine illustration, clean composition, artistic but professional, detailed hand-drawn contours, sophisticated editorial aesthetic.",
-    },
-    {
-        id: "watercolor",
-        label: "Watercolor",
-        shortcut: "3",
-        accentColor: "#84cc16",
-        accentColor2: "#a3e635",
-        cornerStyle: "feather",
-        description: "real person, recognizable face, soft watercolor painting, fine paper texture, delicate brush strokes, controlled pigment bleeding, beautiful pastel color transitions, high-detail painted portrait",
-    },
-    {
-        id: "film-noir",
-        label: "Film Noir",
-        shortcut: "4",
-        accentColor: "#f43f5e",
-        accentColor2: "#fb7185",
-        cornerStyle: "bracket",
-        description: "Professional film noir portrait, realistic human features, dramatic directional lighting, elegant monochrome tones, controlled deep shadows, detailed facial contours, subtle 35mm film grain, cinematic atmosphere, sophisticated editorial photography, premium black-and-white portrait.",
-    },
-    {
         id: "oil-painting",
         label: "Oil Painting",
-        shortcut: "5",
+        shortcut: "1",
         accentColor: "#d97706",
         accentColor2: "#f59e0b",
         cornerStyle: "sketch",
-        description: "Oil painting portrait of a beautiful young , soft natural features, warm skin tones, expressive eyes, delicate brushstrokes, rich colors, soft lighting, textured canvas, elegant classical style.",
-    },
-    {
-        id: "3d-anime",
-        label: "3D Anime",
-        shortcut: "6",
-        accentColor: "#a855f7",
-        accentColor2: "#c084fc",
-        cornerStyle: "bracket",
-        description: "3D animated girl with huge expressive brown eyes, surprised natural expression, dark detailed hair, soft peach-pink skin tones, warm cinematic lighting, smooth high-quality 3D skin shading, glossy realistic hair highlights, soft subsurface-style facial lighting, polished movie-animation character design, pastel cinematic background, expressive facial details, dimensional 3D depth, soft rim lighting, realistic animated-material rendering, premium feature-film animation quality, cinematic composition, no flat 2D illustration, no simple color overlay.",
+        description: "Oil painting portrait of a beautiful young girl, soft natural features, warm skin tones, expressive eyes, delicate brushstrokes, rich colors, soft lighting, textured canvas, elegant classical style.",
     },
     {
         id: "cyberpunk",
         label: "Cyberpunk",
-        shortcut: "7",
+        shortcut: "2",
         accentColor: "#06b6d4",
         accentColor2: "#3b82f6",
         cornerStyle: "glitch",
-        description: "Cyberpunk anime male protagonist, intense sharp eyes, messy black hair, futuristic black techwear jacket, standing in a rain-soaked neon city at night, glowing purple and electric-blue skyscrapers, holographic signs, wet street reflections, dramatic cinematic rim lighting, atmospheric mist, dark futuristic mood, dynamic composition, ultra-detailed anime artwork, high contrast, neon purple and electric-blue lighting, glowing edge highlights, futuristic cinematic depth, 4K-quality visual detail, professional cyberpunk anime aesthetic, no simple color filter.",
+        description: "Cyberpunk anime male protagonist, intense sharp eyes, messy black hair, futuristic black techwear jacket, standing in a rain-soaked neon city at night, glowing purple and electric-blue skyscrapers, holographic signs, wet street reflections, dramatic cinematic rim lighting, atmospheric mist, dark futuristic mood, dynamic composition, ultra-detailed anime artwork, high contrast, 4K, cinematic masterpiece.",
     },
     {
-        id: "anime",
-        label: "Anime",
-        shortcut: "8",
-        accentColor: "#f472b6",
-        accentColor2: "#ec4899",
+        id: "3d-anime",
+        label: "3D Anime",
+        shortcut: "3",
+        accentColor: "#a855f7",
+        accentColor2: "#c084fc",
         cornerStyle: "bracket",
-        description: "Beautiful 2D anime style portrait, vibrant pastel colors, soft glowing highlights, detailed anime eyes, studio ghibli aesthetic, cel-shaded shadows, bright sunny lighting, painted backgrounds, highly detailed illustration, warm aesthetic, no realistic camera look.",
+        description: "3D animated girl with huge expressive brown eyes, surprised expression, dark hair, soft peach-pink skin tones, warm cinematic lighting, smooth glossy shading, pastel background, high-quality movie animation style.",
     },
+    {
+        id: "hand-drawn-anime",
+        label: "Hand-Drawn Anime",
+        shortcut: "4",
+        accentColor: "#c9a876",
+        accentColor2: "#e8d5b5",
+        cornerStyle: "sketch",
+        description: "Hand-drawn anime portrait of a young man with short black hair, calm expression, soft beige tones, delicate ink lines, subtle watercolor shading, vintage paper texture, minimalist background.",
+    },
+    {
+        id: "watercolor",
+        label: "Watercolor",
+        shortcut: "5",
+        accentColor: "#84cc16",
+        accentColor2: "#a3e635",
+        cornerStyle: "feather",
+        description: "real person, recognizable face, soft watercolor painting, fine paper texture, delicate brush strokes, controlled pigment bleeding, beautiful pastel color transitions, high-detail painted portrait",
+    }
 ];
 
 // ─────────────────────────────────────────────

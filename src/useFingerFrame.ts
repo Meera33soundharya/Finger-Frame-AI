@@ -119,11 +119,11 @@ export function useFingerFrame(): UseFingerFrameReturn {
     // ── React UI state ────────────────────────────────────────────────────────
     const [status,       setStatus]       = useState<Status>("idle");
     const [errorMessage, setErrorMessage] = useState("");
-    const [activeStyle,  setActiveStyleState] = useState<StyleId>("cinematic");
+    const [activeStyle,  setActiveStyleState] = useState<StyleId>("oil-painting");
     const [showHint,     setShowHint]     = useState(true);
 
     // ── Mutable refs (hot path — never cause re-renders) ─────────────────────
-    const styleRef         = useRef<StyleId>("cinematic");
+    const styleRef         = useRef<StyleId>("oil-painting");
     const stylesRef        = useRef<StyleId[]>(STYLES.map(s => s.id));
     const trackerRef       = useRef<HandLandmarker | null>(null);
     const rafIdRef         = useRef(0);
@@ -509,79 +509,9 @@ export function useFingerFrame(): UseFingerFrameReturn {
         // Runs independently from RAF. Grabs the current polygon crop, sends it
         // to the AI backend, and stores the result. The RAF loop reads the result.
         async function pollAIFrames() {
-            const backend = backendRef.current;
-            const compositor = compositorRef.current;
-            if (!backend || !compositor) return;
-
-            // Reuse a single canvas for mirroring to prevent memory leaks (GL_OUT_OF_MEMORY)
-            const mirrorCanvas = document.createElement("canvas");
-            const mCtx = mirrorCanvas.getContext("2d", { willReadFrequently: true })!;
-
-            while (aiRunningRef.current) {
-                // Only infer when a polygon is visible and we're not already waiting
-                const quad = cornersRef.current;
-                const video = videoRef.current;
-                const style = styleRef.current;
-                const styleDef = STYLES.find(s => s.id === style);
-
-                if (quad && video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !isInferringRef.current && styleDef) {
-                    isInferringRef.current = true;
-                    let croppedImage: HTMLCanvasElement | null = null;
-                    try {
-                        // Mirror the video to a temporary canvas (webcam is flipped)
-                        const w = video.videoWidth || 640;
-                        const h = video.videoHeight || 480;
-                        
-                        if (mirrorCanvas.width !== w || mirrorCanvas.height !== h) {
-                            mirrorCanvas.width = w;
-                            mirrorCanvas.height = h;
-                        }
-                        
-                        mCtx.save();
-                        mCtx.clearRect(0, 0, w, h);
-                        mCtx.translate(w, 0);
-                        mCtx.scale(-1, 1);
-                        mCtx.drawImage(video, 0, 0, w, h);
-                        mCtx.restore();
-
-                        console.log("[AI Filter] Input frame captured");
-                        croppedImage = compositor.extractRegion(mirrorCanvas, quad);
-
-                        if (croppedImage.width > 4 && croppedImage.height > 4) {
-                            console.log("[AI Filter] Request started");
-                            const result = await backend.infer({
-                                croppedImage,
-                                prompt: styleDef.description,
-                                polygon: quad,
-                                timestamp: performance.now(),
-                                presence: presenceRef.current,
-                            });
-
-                            // Only store if the style hasn't changed while we were waiting
-                            if (result.outputCanvas && styleRef.current === style) {
-                                console.log(`[AI Filter] Result received. Dimensions: ${result.outputCanvas.width}x${result.outputCanvas.height}`);
-                                console.log("[AI Filter] Cached latest result");
-                                aiResultRef.current = result.outputCanvas;
-                                aiResultStyleRef.current = style;
-                            } else if (!result.outputCanvas) {
-                                console.log("[AI Filter] Falling back to original camera");
-                            }
-                        }
-                    } catch (e) {
-                        console.error("[AI Filter] ERROR", e);
-                        console.log("[AI Filter] Falling back to original camera");
-                    } finally {
-                        if (croppedImage) {
-                            croppedImage.width = 0;
-                            croppedImage.height = 0;
-                        }
-                        isInferringRef.current = false;
-                    }
-                }
-
-                // Small yield before next poll iteration — prevents busy-loop
-                await new Promise(resolve => setTimeout(resolve, 50));
-            }
+            // AI polling disabled as per user request to use real-time local pixel filters
+            // rather than generating completely new images.
+            return;
         }
 
         async function init() {

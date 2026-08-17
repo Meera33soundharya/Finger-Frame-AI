@@ -358,3 +358,209 @@ export function processCyberpunkFilterCPU(
 
     targetCtx.drawImage(offCanvas!, 0, 0, w, h);
 }
+
+/**
+ * Robust CPU Fallback for Oil Painting
+ */
+export function processOilPaintingFilterCPU(
+    sourceVideo: HTMLVideoElement | HTMLCanvasElement,
+    targetCtx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    polygonMask?: Point[] | null
+) {
+    const { offCtx, srcCtx } = getOffscreen(width, height);
+    const w = width, h = height;
+
+    srcCtx.save();
+    srcCtx.translate(w, 0);
+    srcCtx.scale(-1, 1);
+    srcCtx.drawImage(sourceVideo, 0, 0, w, h);
+    srcCtx.restore();
+
+    offCtx.save();
+    offCtx.translate(w, 0);
+    offCtx.scale(-1, 1);
+    offCtx.drawImage(sourceVideo, 0, 0, w, h);
+    offCtx.restore();
+
+    let minX = 0, minY = 0, maxX = w - 1, maxY = h - 1;
+    if (polygonMask && polygonMask.length > 0) {
+        minX = w; minY = h; maxX = 0; maxY = 0;
+        for (const p of polygonMask) {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+        }
+        minX = Math.max(0, Math.floor(minX) - 10);
+        minY = Math.max(0, Math.floor(minY) - 10);
+        maxX = Math.min(w - 1, Math.ceil(maxX) + 10);
+        maxY = Math.min(h - 1, Math.ceil(maxY) + 10);
+    }
+
+    const rawData = srcCtx.getImageData(0, 0, w, h);
+    const src = rawData.data;
+    
+    // Kuwahara painted surface
+    const painted = kuwaharaApprox(src, w, h);
+
+    const bboxW = maxX - minX + 1;
+    const bboxH = maxY - minY + 1;
+    const out = new Uint8ClampedArray(bboxW * bboxH * 4);
+
+    for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+            const si = (y * w + x) * 4;
+            const di = ((y - minY) * bboxW + (x - minX)) * 4;
+
+            let r = painted[si];
+            let g = painted[si + 1];
+            let b = painted[si + 2];
+
+            const lum = r * 0.299 + g * 0.587 + b * 0.114;
+            
+            // Contrast
+            r = (r - 128) * 1.35 + 128;
+            g = (g - 128) * 1.35 + 128;
+            b = (b - 128) * 1.35 + 128;
+            
+            // Warm classical color grading
+            const blend = lum / 255;
+            const tr = r * (0.8 + blend * 0.4);
+            const tg = g * (0.6 + blend * 0.6);
+            const tb = b * (0.4 + blend * 0.8);
+
+            // Canvas texture and impasto noise
+            const noise = hash(x, y);
+            const texNoise = (noise > 0.95) ? -20 : (noise < 0.05) ? 20 : 0;
+            const thread = Math.sin(x * 0.5) * Math.cos(y * 0.5) * 10;
+
+            out[di]     = clamp(tr + texNoise + thread);
+            out[di + 1] = clamp(tg + texNoise + thread);
+            out[di + 2] = clamp(tb + texNoise + thread);
+            out[di + 3] = 255;
+        }
+    }
+    const outData = new ImageData(out, bboxW, bboxH);
+    offCtx.putImageData(outData, minX, minY);
+
+    targetCtx.save();
+    targetCtx.drawImage(offCanvas!, 0, 0, w, h);
+    
+    // Vignette
+    const vig = targetCtx.createRadialGradient(w/2, h/2, h*0.2, w/2, h/2, h*0.9);
+    vig.addColorStop(0, "rgba(0,0,0,0)");
+    vig.addColorStop(1, "rgba(60,30,0,0.6)");
+    targetCtx.globalCompositeOperation = "multiply";
+    targetCtx.fillStyle = vig;
+    targetCtx.fillRect(0, 0, w, h);
+    targetCtx.restore();
+}
+
+/**
+ * Robust CPU Fallback for 3D Anime
+ */
+export function process3DAnimeFilterCPU(
+    sourceVideo: HTMLVideoElement | HTMLCanvasElement,
+    targetCtx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    polygonMask?: Point[] | null
+) {
+    const { offCtx, srcCtx } = getOffscreen(width, height);
+    const w = width, h = height;
+
+    srcCtx.save();
+    srcCtx.translate(w, 0);
+    srcCtx.scale(-1, 1);
+    srcCtx.drawImage(sourceVideo, 0, 0, w, h);
+    srcCtx.restore();
+
+    offCtx.save();
+    offCtx.translate(w, 0);
+    offCtx.scale(-1, 1);
+    offCtx.drawImage(sourceVideo, 0, 0, w, h);
+    offCtx.restore();
+
+    let minX = 0, minY = 0, maxX = w - 1, maxY = h - 1;
+    if (polygonMask && polygonMask.length > 0) {
+        minX = w; minY = h; maxX = 0; maxY = 0;
+        for (const p of polygonMask) {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+        }
+        minX = Math.max(0, Math.floor(minX) - 10);
+        minY = Math.max(0, Math.floor(minY) - 10);
+        maxX = Math.min(w - 1, Math.ceil(maxX) + 10);
+        maxY = Math.min(h - 1, Math.ceil(maxY) + 10);
+    }
+
+    const rawData = srcCtx.getImageData(0, 0, w, h);
+    const src = rawData.data;
+    
+    // Subsurface scattering approx via blurring
+    const painted = kuwaharaApprox(src, w, h);
+
+    const bboxW = maxX - minX + 1;
+    const bboxH = maxY - minY + 1;
+    const out = new Uint8ClampedArray(bboxW * bboxH * 4);
+
+    for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+            const si = (y * w + x) * 4;
+            const di = ((y - minY) * bboxW + (x - minX)) * 4;
+
+            const pr = painted[si], pg = painted[si + 1], pb = painted[si + 2];
+            const or = src[si],     og = src[si + 1],     ob = src[si + 2];
+
+            let r = pr * 0.7 + or * 0.3;
+            let g = pg * 0.7 + og * 0.3;
+            let b = pb * 0.7 + ob * 0.3;
+
+            // S-curve contrast
+            r = (r - 128) * 1.25 + 128;
+            g = (g - 128) * 1.25 + 128;
+            b = (b - 128) * 1.25 + 128;
+
+            const lum = r * 0.299 + g * 0.587 + b * 0.114;
+            
+            if (lum < 100) {
+                r *= 0.9;
+                g *= 0.85;
+                b *= 1.15;
+            } else if (lum > 150) {
+                r *= 1.1;
+                g *= 1.05;
+                b *= 0.95;
+            }
+            
+            out[di]     = clamp(r);
+            out[di + 1] = clamp(g);
+            out[di + 2] = clamp(b);
+            out[di + 3] = 255;
+        }
+    }
+    const outData = new ImageData(out, bboxW, bboxH);
+    offCtx.putImageData(outData, minX, minY);
+
+    targetCtx.save();
+    targetCtx.drawImage(offCanvas!, 0, 0, w, h);
+    
+    // Glow and color grade
+    const glow = targetCtx.createRadialGradient(w*0.5, h*0.35, 0, w*0.5, h*0.35, w*0.65);
+    glow.addColorStop(0,   "rgba(255,240,200,0.30)");
+    glow.addColorStop(0.6, "rgba(255,240,200,0.05)");
+    glow.addColorStop(1,   "rgba(0,0,0,0)");
+    targetCtx.globalCompositeOperation = "screen";
+    targetCtx.fillStyle = glow;
+    targetCtx.fillRect(0, 0, w, h);
+    
+    targetCtx.globalCompositeOperation = "overlay";
+    targetCtx.fillStyle = "rgba(130,70,255,0.14)";
+    targetCtx.fillRect(0, 0, w, h);
+    
+    targetCtx.restore();
+}

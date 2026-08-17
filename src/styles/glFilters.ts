@@ -772,22 +772,11 @@ const FRAG_PORTRAIT = FRAG_HEADER + /* glsl */ `
 // Maps CURRENT StyleId values (from effects.ts) to GLSL shaders.
 // Legacy IDs are kept as fallback for any custom styles still using them.
 export const SHADER_SRC: Record<string, string> = {
-    // ── Current style IDs (effects.ts STYLES array) ───────────────────────
-    cinematic:          FRAG_PORTRAIT,          // skin-smooth + warm bokeh
-    "editorial-ink":    FRAG_SKETCH,            // Sobel pencil on paper
-    watercolor:         FRAG_WATERCOLOR,        // Kuwahara painting
-    "film-noir":        FRAG_SKETCH,            // edge-based + will get b&w via CSS fallback
-    "oil-painting":     FRAG_OIL_PAINTING,      // Kuwahara + oil style
-    "3d-anime":         FRAG_PIXAR,             // 3D movie style
-    cyberpunk:          FRAG_CYBERPUNK,         // Neon cyberpunk
-    "vintage-film":     FRAG_OIL_PAINTING,      // warm Kuwahara + amber grade
-    // ── Legacy IDs (kept for backward compat) ────────────────────────────
-    sketch:             FRAG_SKETCH,
-    anime:              FRAG_ANIME,
-    "cyberpunk-girl":   FRAG_CYBERPUNK_GIRL,
-    movie3d:            FRAG_MOVIE3D,
-    pixar:              FRAG_PIXAR,
-    portrait:           FRAG_PORTRAIT,
+    "oil-painting":     FRAG_OIL_PAINTING,
+    "cyberpunk":        FRAG_CYBERPUNK,
+    "3d-anime":         FRAG_PIXAR,
+    "hand-drawn-anime": FRAG_ANIME,
+    "watercolor":       FRAG_WATERCOLOR,
 };
 
 // ── WebGL state ───────────────────────────────────────────────────────────────
